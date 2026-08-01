@@ -272,12 +272,12 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 		}
 
 		for _, url := range result.URLs {
-			if len(url) > 4 && (url[:4] == "http" || url[:4] == "https") {
+			if strings.HasPrefix(url, "http") {
 				content = append(content, map[string]interface{}{
 					"type": "resource",
 					"resource": map[string]interface{}{
 						"uri":      url,
-						"mimeType": "image/png",
+						"mimeType": mimeTypeFromURL(url),
 					},
 				})
 			} else {
@@ -288,7 +288,7 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 				content = append(content, map[string]interface{}{
 					"type":     "image",
 					"data":     string(fileData),
-					"mimeType": "image/png",
+					"mimeType": mimeTypeFromURL(url),
 				})
 			}
 		}
@@ -336,12 +336,12 @@ func (s *Server) sendVideoResult(id *jsonNumber, result *supplier.VideoResult) {
 		}
 
 		for _, url := range result.URLs {
-			if len(url) > 4 && (url[:4] == "http" || url[:4] == "https") {
+			if strings.HasPrefix(url, "http") {
 				content = append(content, map[string]interface{}{
 					"type": "resource",
 					"resource": map[string]interface{}{
 						"uri":      url,
-						"mimeType": "video/mp4",
+						"mimeType": mimeTypeFromURL(url),
 					},
 				})
 			}
@@ -471,6 +471,37 @@ func consumeLine(r *bufio.Reader) {
 		if err != nil || b == '\n' {
 			return
 		}
+	}
+}
+
+// mimeTypeFromURL returns a MIME type based on the URL's file extension.
+// Handles query strings, fragments, and uppercase extensions.
+func mimeTypeFromURL(rawURL string) string {
+	u := rawURL
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	u = strings.ToLower(u)
+
+	switch {
+	case strings.HasSuffix(u, ".png"):
+		return "image/png"
+	case strings.HasSuffix(u, ".jpg"), strings.HasSuffix(u, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(u, ".webp"):
+		return "image/webp"
+	case strings.HasSuffix(u, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(u, ".mp4"):
+		return "video/mp4"
+	case strings.HasSuffix(u, ".webm"):
+		return "video/webm"
+	case strings.HasSuffix(u, ".avi"):
+		return "video/x-msvideo"
+	case strings.HasSuffix(u, ".mov"):
+		return "video/quicktime"
+	default:
+		return "application/octet-stream"
 	}
 }
 

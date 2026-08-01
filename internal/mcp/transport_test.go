@@ -60,12 +60,12 @@ func (m *mockVideoSupplier) GenVideo(req supplier.VideoRequest) *supplier.VideoR
 // ---------------------------------------------------------------------------
 
 type mcpTestHarness struct {
-	t          *testing.T
-	stdinPipe  *os.File
-	stdoutPipe *os.File
-	server     *Server
-	serverErr  chan error
-	cancel     func()
+	t            *testing.T
+	stdinPipe    *os.File
+	stdoutPipe   *os.File
+	server       *Server
+	serverErr    chan error
+	cancel       func()
 }
 
 func newMCPTestHarness(t *testing.T, imageSuppliers []supplier.ImageSupplier, videoSuppliers []supplier.VideoSupplier) *mcpTestHarness {
@@ -99,14 +99,12 @@ func newMCPTestHarness(t *testing.T, imageSuppliers []supplier.ImageSupplier, vi
 	go func() {
 		serverErr <- server.Start()
 	}()
-	time.Sleep(50 * time.Millisecond)
-
 	return &mcpTestHarness{
-		t:          t,
-		stdinPipe:  stdinWriter,
-		stdoutPipe: stdoutReader,
-		server:     server,
-		serverErr:  serverErr,
+		t:            t,
+		stdinPipe:    stdinWriter,
+		stdoutPipe:   stdoutReader,
+		server:       server,
+		serverErr:    serverErr,
 		cancel: func() {
 			stdinWriter.Close()
 			stdoutWriter.Close()
@@ -1071,5 +1069,50 @@ func TestConsumeLine(t *testing.T) {
 	}
 	if string(rest) != "remaining" {
 		t.Errorf("remaining = %q, want %q", string(rest), "remaining")
+	}
+}
+
+func TestMimeTypeFromURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		// Standard extensions
+		{"https://example.com/image.png", "image/png"},
+		{"https://example.com/photo.jpg", "image/jpeg"},
+		{"https://example.com/photo.jpeg", "image/jpeg"},
+		{"https://example.com/anim.webp", "image/webp"},
+		{"https://example.com/anim.gif", "image/gif"},
+		{"https://example.com/video.mp4", "video/mp4"},
+		{"https://example.com/video.webm", "video/webm"},
+		{"https://example.com/video.avi", "video/x-msvideo"},
+		{"https://example.com/video.mov", "video/quicktime"},
+		// Uppercase extensions
+		{"https://example.com/image.PNG", "image/png"},
+		{"https://example.com/photo.JPG", "image/jpeg"},
+		{"https://example.com/video.MP4", "video/mp4"},
+		{"https://example.com/video.MOV", "video/quicktime"},
+		// Query strings
+		{"https://cdn.example.com/image.png?x=1", "image/png"},
+		{"https://cdn.example.com/video.mp4?token=abc&expires=999", "video/mp4"},
+		{"https://cdn.example.com/photo.jpg?w=800&h=600", "image/jpeg"},
+		{"https://cdn.example.com/anim.gif?x=1&y=2#frag", "image/gif"},
+		// No extension / unknown
+		{"https://example.com/photo", "application/octet-stream"},
+		{"https://example.com/dir.with.dots/file", "application/octet-stream"},
+		{"https://example.com/image.png?x=1/unknown", "image/png"},
+		// Local file paths
+		{"file:///tmp/image.png", "image/png"},
+		{"/tmp/photo.jpg", "image/jpeg"},
+		// Base64-like (no extension at end)
+		{"data:image/png;base64,abc", "application/octet-stream"},
+	}
+	for _, tc := range tests {
+		t.Run("", func(t *testing.T) {
+			got := mimeTypeFromURL(tc.url)
+			if got != tc.want {
+				t.Errorf("mimeTypeFromURL(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
 	}
 }
