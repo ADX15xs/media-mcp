@@ -91,7 +91,7 @@ suppliers:
   doubao_seedream:
     enabled: false
     type: image
-    api_key: ${ARK_API_KEY}          # 火山方舟 Agent Plan API Key
+    api_key: ${VOLC_API_KEY}          # 火山方舟 Agent Plan API Key
     base_url: https://ark.cn-beijing.volces.com/api/plan/v3/images/generations
     model: doubao-seedream-5.0-lite
     size: 2K
