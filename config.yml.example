@@ -1,0 +1,87 @@
+# Media MCP Server Configuration
+# This file is versioned in git as a template.
+# Each machine should have its own config.yml with real credentials.
+#
+# Usage:
+#   cp config.yml.example config.yml
+#   # Edit config.yml with your API keys
+#   ./media-mcp          # or: MEDIA_MCP_CONFIG=config.yml ./media-mcp
+#
+# Variable expansion: ${VAR_NAME} is replaced from environment at startup.
+# Example: api_key: ${SENSENOVA_API_KEY}
+
+default_supplier: senseNova
+
+suppliers:
+  # ──────────────────────────────────────────────
+  # 1. SenseNova — 字节跳动文生图 API
+  # ──────────────────────────────────────────────
+  senseNova:
+    enabled: true
+    type: image
+    api_key: ${SENSENOVA_API_KEY}
+    base_url: https://token.sensenova.cn/v1/images/generations
+    model: sensenova-u1-fast
+    size: 2752x1536
+    extra:
+      n: 1          # number of images per request
+
+  # ──────────────────────────────────────────────
+  # 2. Agnes AI — Sapiens AI 图像生成 (Image 2.0 & 2.1 Flash)
+  # ──────────────────────────────────────────────
+  # 支持文生图、图生图、多图合成
+  # 关键：response_format 必须放在 extra_body 内部
+  agnes_ai:
+    enabled: false
+    type: image
+    api_key: ${AGNES_AI_API_KEY}
+    base_url: https://apihub.agnes-ai.com/v1/images/generations
+    models:
+      - agnes-image-2.0-flash    # 快速版，低信息密度
+      - agnes-image-2.1-flash    # 升级款，高信息密度优化
+    default_model: agnes-image-2.1-flash
+    size: 1024x768
+    extra:
+      # 支持的 ratio 值（配合 2.1 Flash 使用 size档位如 2K/3K/4K）:
+      # 1:1, 3:4, 4:3, 16:9, 9:16, 2:3, 3:2, 21:9
+      supported_ratios:
+        - 1:1
+        - 16:9
+        - 9:16
+        - 4:3
+        - 3:4
+        - 2:3
+        - 3:2
+        - 21:9
+      # 支持的 size 档位 (2.1 Flash):
+      # 1K, 2K, 3K, 4K
+      supports_img2img: true       # 支持输入图片数组
+      supports_multi_image: true   # 支持多图合成
+
+  # ──────────────────────────────────────────────
+  # 3. Doubao Seedream — 火山引擎图像生成系列
+  # ──────────────────────────────────────────────
+  # 四个模型共用同一端点，仅 Model ID 不同
+  # - doubao-seedream-5-0-pro-260628    (高精度编辑，不支持组图/流式)
+  # - doubao-seedream-5-0-lite-260128   (推荐：联网搜索+流式输出)
+  # - doubao-seedream-4-5-251128        (多图融合+组图生成)
+  # - doubao-seedream-4-0-250828        (极速模式+组图)
+  doubao_seedream:
+    enabled: false
+    type: image
+    api_key: ${ARK_API_KEY}          # 火山方舟 API Key
+    base_url: https://ark.cn-beijing.volces.com/api/v3/images/generations
+    models:
+      - doubao-seedream-5-0-lite-260128   # 推荐默认
+      - doubao-seedream-5-0-pro-260628
+      - doubao-seedream-4-5-251128
+      - doubao-seedream-4-0-250828
+    default_model: doubao-seedream-5-0-lite-260128
+    size: 2K
+    extra:
+      output_format: png           # png 或 jpeg
+      watermark: false
+      sequential_image_generation: disabled   # auto 生成组图
+      # stream: false             # 流式输出 (5.0 pro 不支持)
+      # optimize_prompt_options:
+      #   mode: standard          # standard 或 fast (仅 5.0 pro / 4.0 支持)
