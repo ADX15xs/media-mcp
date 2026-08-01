@@ -24,6 +24,45 @@
 | **SenseNova** | `senseNova` | sensenova-u1-fast | token.sensenova.cn | base64 自动保存为临时文件 |
 | **Agnes AI** | `agnes_ai` | agnes-image-2.0-flash / 2.1-flash | api.agnes-ai.cn | `response_format` 需放在 `extra_body` 内 |
 | **Doubao Seedream** | `doubao_seedream` | 5.0-lite / 5.0-pro / 4.5 / 4.0 | ark.cn-beijing.volces.com | 支持 `output_format`、`watermark`、组图生成、联网搜索 |
+| **Agnes Video** | `agnes_video` | agnes-video-v2.0 | api.agnes-ai.cn | 异步任务，自动轮询，返回 video_url |
+
+## 视频生成支持
+
+视频生成为异步任务模式，支持以下流程：
+
+1. **提交任务** — 调用视频生成 API，获得 `task_id`
+2. **自动轮询** — 每 5 秒查询一次任务状态，最长等待 10 分钟
+3. **返回结果** — 任务完成后返回视频 URL
+
+工具名称：`{supplier}_generateVideo`
+
+调用示例：
+```jsonc
+{
+  "name": "agnes_video_generateVideo",
+  "arguments": {
+    "prompt": "一只白色狐狸在月光下的雪原中奔跑，电影质感",
+    "model": "agnes-video-v2.0",
+    "duration": 5,
+    "style": "cinematic"
+  }
+}
+```
+
+启用视频供应商需配置 `config.yml`：
+```yaml
+agnes_video:
+  enabled: true
+  type: video
+  api_key: ${AGNES_AI_API_KEY}
+  base_url: https://api.agnes-ai.cn/v1/videos
+  model: agnes-video-v2.0
+  extra:
+    width: 1152
+    height: 768
+    num_frames: 121      # 约 5 秒 (121/24 ≈ 5s)
+    frame_rate: 24
+```
 
 ## 快速开始
 
@@ -97,7 +136,9 @@ make build
 
 - `senseNova_generateImage` — 使用 SenseNova 生成图片
 - `agnes_ai_generateImage` — 使用 Agnes AI 生成图片（需启用）
-- `{supplier}_generateImage` — 任何已启用的供应商都会暴露为独立 tool
+- `agnes_video_generateVideo` — 使用 Agnes AI 生成视频（需启用）
+- `{supplier}_generateImage` — 任何已启用的图像供应商都会暴露为独立 tool
+- `{supplier}_generateVideo` — 任何已启用的视频供应商都会暴露为独立 tool
 
 ### 调用示例
 
@@ -169,7 +210,9 @@ media-mcp/
 │       ├── supplier.go         # ImageSupplier / VideoSupplier 接口
 │       ├── registry.go         # 工厂注册表
 │       ├── sensenova.go        # SenseNova 专用适配器
-│       ├── agnes_ai.go         # Agnes AI 适配器 (stub)
+│       ├── agnes_ai.go         # Agnes AI 图像适配器
+│       ├── agnes_video.go      # Agnes AI 视频适配器（异步轮询）
+│       ├── doubao_seedream.go  # Doubao Seedream 适配器
 │       └── http_generic.go     # 通用 HTTP 适配器（用于第三方）
 ├── config.yml                  # 每机独立（不进 git）
 ├── config.yml.example          # 模板（进 git）

@@ -18,7 +18,6 @@ func main() {
 	} else if p := os.Getenv("MEDIA_MCP_CONFIG"); p != "" {
 		cfgPath = p
 	} else {
-		// Try relative to executable, then current dir.
 		exe, err := os.Executable()
 		if err == nil {
 			candidate := filepath.Join(filepath.Dir(exe), "config.yml")
@@ -27,7 +26,6 @@ func main() {
 			}
 		}
 		if _, err := os.Stat(cfgPath); err != nil {
-			// Fallback to current directory.
 			cfgPath = filepath.Join(".", "config.yml")
 		}
 	}
@@ -41,6 +39,7 @@ func main() {
 
 	// --- Dynamically create suppliers from config ---
 	var imageSuppliers []supplier.ImageSupplier
+	var videoSuppliers []supplier.VideoSupplier
 
 	for name, sCfg := range cfg.Suppliers {
 		if !sCfg.Enabled {
@@ -73,15 +72,16 @@ func main() {
 			imageSuppliers = append(imageSuppliers, adapter)
 			fmt.Fprintf(os.Stderr, "[media-mcp] Registered supplier: %s (%s)\n", adapter.Name(), sCfg.BaseURL)
 
+		case "agnes_video":
+			adapter := supplier.NewAgnesVideoAdapter(&sCfg)
+			videoSuppliers = append(videoSuppliers, adapter)
+			fmt.Fprintf(os.Stderr, "[media-mcp] Registered video supplier: %s (%s)\n", adapter.Name(), sCfg.BaseURL)
+
 		default:
-			// Generic HTTP-based adapter for any unknown supplier.
 			adapter := supplier.NewHTTPGenericAdapter(name, &sCfg)
 			if sCfg.SupplierType == "image" || sCfg.SupplierType == "both" {
 				imageSuppliers = append(imageSuppliers, adapter)
 				fmt.Fprintf(os.Stderr, "[media-mcp] Registered generic supplier: %s (%s)\n", name, sCfg.BaseURL)
-			}
-			if sCfg.SupplierType == "video" || sCfg.SupplierType == "both" {
-				fmt.Fprintf(os.Stderr, "[media-mcp] Note: video support for %s is not yet implemented\n", name)
 			}
 		}
 	}
@@ -92,9 +92,9 @@ func main() {
 
 	// Create MCP server and start listening on stdio.
 	server := mcp.NewServer(cfg)
-	server.RegisterSuppliers(imageSuppliers)
+	server.RegisterSuppliers(imageSuppliers, videoSuppliers)
 
-	fmt.Fprintf(os.Stderr, "[media-mcp] Starting MCP server with %d supplier(s) on stdio\n", len(imageSuppliers))
+	fmt.Fprintf(os.Stderr, "[media-mcp] Starting MCP server with %d image supplier(s) and %d video supplier(s) on stdio\n", len(imageSuppliers), len(videoSuppliers))
 	if err := server.Start(); err != nil {
 		log.Fatalf("MCP server error: %v", err)
 	}
