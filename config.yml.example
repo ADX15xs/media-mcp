@@ -14,7 +14,7 @@ default_supplier: senseNova
 
 suppliers:
   # ──────────────────────────────────────────────
-  # 1. SenseNova — 字节跳动文生图 API
+  # 1. SenseNova — 商汤科技信息图生成 API
   # ──────────────────────────────────────────────
   senseNova:
     enabled: true
@@ -27,18 +27,21 @@ suppliers:
       n: 1          # number of images per request
 
   # ──────────────────────────────────────────────
-  # 2. Agnes AI — Sapiens AI 图像生成 (Image 2.0 & 2.1 Flash)
+  # 2. Agnes AI — Sapiens AI 图像/视频生成平台
   # ──────────────────────────────────────────────
-  # 支持文生图、图生图、多图合成
+  # 图像模型：agnes-image-2.0-flash、agnes-image-2.1-flash
+  # 视频模型：agnes-video-v2.0
   # 关键：response_format 必须放在 extra_body 内部
+
+  # 2.1 Agnes Image 2.0 Flash — 快速版，低信息密度
   agnes_ai:
     enabled: false
     type: image
     api_key: ${AGNES_AI_API_KEY}
-    base_url: https://apihub.agnes-ai.com/v1/images/generations
+    base_url: https://api.agnes-ai.cn/v1/images/generations
     models:
-      - agnes-image-2.0-flash    # 快速版，低信息密度
-      - agnes-image-2.1-flash    # 升级款，高信息密度优化
+      - agnes-image-2.0-flash
+      - agnes-image-2.1-flash
     default_model: agnes-image-2.1-flash
     size: 1024x768
     extra:
@@ -53,35 +56,49 @@ suppliers:
         - 2:3
         - 3:2
         - 21:9
-      # 支持的 size 档位 (2.1 Flash):
-      # 1K, 2K, 3K, 4K
+      # 支持的 size 档位 (2.1 Flash): 1K, 2K, 3K, 4K
       supports_img2img: true       # 支持输入图片数组
       supports_multi_image: true   # 支持多图合成
 
+  # 2.2 Agnes Video V2.0 — 异步视频生成
+  # 注意：视频供应商使用 HTTPGenericAdapter，需配置为 type: video
+  agnes_video:
+    enabled: false
+    type: video
+    api_key: ${AGNES_AI_API_KEY}
+    base_url: https://api.agnes-ai.cn/v1/videos
+    model: agnes-video-v2.0
+    extra:
+      # 视频生成参数（默认值）
+      width: 1152
+      height: 768
+      num_frames: 121          # 必须 ≤ 441 且遵循 8n + 1 规则
+      frame_rate: 24
+      # 支持分辨率档位: 480p, 720p, 1080p
+      # 支持宽高比: 16:9, 9:16, 1:1, 4:3, 3:4
+      # 视频时长: seconds = num_frames / frame_rate
+      #   约 3 秒: num_frames=81, frame_rate=24
+      #   约 5 秒: num_frames=121, frame_rate=24
+      #   约 10 秒: num_frames=241, frame_rate=24
+      #   约 18 秒: num_frames=441, frame_rate=24
+
   # ──────────────────────────────────────────────
-  # 3. Doubao Seedream — 火山引擎图像生成系列
+  # 3. Doubao Seedream — 火山引擎豆包图像生成
   # ──────────────────────────────────────────────
-  # 四个模型共用同一端点，仅 Model ID 不同
-  # - doubao-seedream-5-0-pro-260628    (高精度编辑，不支持组图/流式)
-  # - doubao-seedream-5-0-lite-260128   (推荐：联网搜索+流式输出)
-  # - doubao-seedream-4-5-251128        (多图融合+组图生成)
-  # - doubao-seedream-4-0-250828        (极速模式+组图)
+  # 使用 Agent Plan 专属 API Key 和 Base URL（含 /plan）
+  # 参考图数量 + 生成图片数量 ≤ 15 张
+  # 抵扣系数：1 张成功生成的图片 = 99 AFP
   doubao_seedream:
     enabled: false
     type: image
-    api_key: ${ARK_API_KEY}          # 火山方舟 API Key
-    base_url: https://ark.cn-beijing.volces.com/api/v3/images/generations
-    models:
-      - doubao-seedream-5-0-lite-260128   # 推荐默认
-      - doubao-seedream-5-0-pro-260628
-      - doubao-seedream-4-5-251128
-      - doubao-seedream-4-0-250828
-    default_model: doubao-seedream-5-0-lite-260128
+    api_key: ${ARK_API_KEY}          # 火山方舟 Agent Plan API Key
+    base_url: https://ark.cn-beijing.volces.com/api/plan/v3/images/generations
+    model: doubao-seedream-5.0-lite
     size: 2K
     extra:
       output_format: png           # png 或 jpeg
-      watermark: false
-      sequential_image_generation: disabled   # auto 生成组图
-      # stream: false             # 流式输出 (5.0 pro 不支持)
-      # optimize_prompt_options:
-      #   mode: standard          # standard 或 fast (仅 5.0 pro / 4.0 支持)
+      watermark: false             # 是否添加水印
+      # 支持流式输出 (stream: true)
+      # 支持联网搜索 (web_search: true)
+      # 支持组图生成 (sequential_image_generation: auto)
+      # 支持优化提示词 (optimize_mode: standard 或 fast)

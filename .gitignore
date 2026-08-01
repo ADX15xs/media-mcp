@@ -2,6 +2,9 @@
 build/
 *.exe
 
+# 环境变量配置（不要提交）
+.env
+
 # Config with real keys (never commit!)
 config.yml
 
