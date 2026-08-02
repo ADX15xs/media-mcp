@@ -50,26 +50,7 @@ func (s *Server) Start() error {
 			continue
 		}
 
-		var raw []byte
-
-		// Detect Content-Length header format (used by TypeScript SDK clients).
-		if cl := parseContentLength(line); cl > 0 {
-			// Consume the blank line separator (\r\n or \n) after the header, if present.
-			// The TypeScript SDK sends "Content-Length: N\r\n\r\nBODY", so after
-			// ReadString('\n') the buffer is at "\r\nBODY". Simpler clients send
-			// "Content-Length: N\nBODY" with no blank line.
-			if b, err := reader.Peek(1); err == nil && (b[0] == '\r' || b[0] == '\n') {
-				consumeLine(reader)
-			}
-			// Read exactly cl bytes for the JSON body.
-			body := make([]byte, cl)
-			if _, err := io.ReadFull(reader, body); err != nil {
-				return fmt.Errorf("read body: %w", err)
-			}
-			raw = body
-		} else {
-			raw = []byte(line)
-		}
+		raw := []byte(line)
 
 		var msg jsonMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {
@@ -390,9 +371,9 @@ func (s *Server) write(v interface{}) {
 		fmt.Fprintf(os.Stderr, "marshal response: %v\n", err)
 		return
 	}
-	// Use Content-Length header format (compatible with TypeScript SDK clients).
-	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
-	os.Stdout.Write([]byte(header))
+	// Use newline-delimited JSON (NDJSON) format — one JSON message per line.
+	// This is the MCP standard for stdio transport.
+	data = append(data, '\n')
 	os.Stdout.Write(data)
 	os.Stdout.Sync()
 }
@@ -437,41 +418,6 @@ func trimTrailing(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
-}
-
-// parseContentLength returns the content length if line is a
-// "Content-Length: N" header, or 0 otherwise.
-func parseContentLength(line string) int {
-	const prefix = "Content-Length:"
-	if len(line) < len(prefix) {
-		return 0
-	}
-	p := line[:len(prefix)]
-	if !strings.EqualFold(p, prefix) {
-		return 0
-	}
-	n := 0
-	for _, ch := range line[len(prefix):] {
-		if ch >= '0' && ch <= '9' {
-			n = n*10 + int(ch-'0')
-		} else if ch == ' ' || ch == '\t' {
-			continue
-		} else {
-			return 0
-		}
-	}
-	return n
-}
-
-// consumeLine reads and discards one line (up to \n) from the reader.
-// This is used to consume the blank line after a Content-Length header block.
-func consumeLine(r *bufio.Reader) {
-	for {
-		b, err := r.ReadByte()
-		if err != nil || b == '\n' {
-			return
-		}
-	}
 }
 
 // mimeTypeFromURL returns a MIME type based on the URL's file extension.

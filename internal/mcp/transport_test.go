@@ -1,12 +1,10 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"media-mcp/internal/config"
 	"media-mcp/internal/supplier"
 	"os"
@@ -134,31 +132,7 @@ func (h *mcpTestHarness) sendRequest(method string, id int, params interface{}) 
 	}
 }
 
-func (h *mcpTestHarness) sendRequestWithContentLength(method string, id int, params interface{}) {
-	h.t.Helper()
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-	}
-	if params != nil {
-		msg["params"] = params
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		h.t.Fatalf("marshal request: %v", err)
-	}
-	header := fmt.Sprintf("Content-Length: %d\n", len(data))
-	if _, err := h.stdinPipe.Write([]byte(header)); err != nil {
-		h.t.Fatalf("write header: %v", err)
-	}
-	if _, err := h.stdinPipe.Write(data); err != nil {
-		h.t.Fatalf("write body: %v", err)
-	}
-	if _, err := h.stdinPipe.Write([]byte("\n")); err != nil {
-		h.t.Fatalf("write trailing newline: %v", err)
-	}
-}
+
 
 func (h *mcpTestHarness) sendNotification(method string, params interface{}) {
 	h.t.Helper()
@@ -187,48 +161,6 @@ func (h *mcpTestHarness) readResponse() map[string]interface{} {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		var headerBuf bytes.Buffer
-		for {
-			tmp := make([]byte, 1)
-			_, err := h.stdoutPipe.Read(tmp)
-			if err != nil {
-				ch <- result{nil, err}
-				return
-			}
-			headerBuf.WriteByte(tmp[0])
-			if tmp[0] == '\n' {
-				break
-			}
-		}
-		headerLine := strings.TrimRight(headerBuf.String(), "\r\n")
-		cl := 0
-		if strings.HasPrefix(strings.ToLower(headerLine), "content-length:") {
-			parts := strings.SplitN(headerLine, ":", 2)
-			if len(parts) == 2 {
-				fmt.Sscanf(strings.TrimSpace(parts[1]), "%d", &cl)
-			}
-			for {
-				tmp := make([]byte, 1)
-				_, err := h.stdoutPipe.Read(tmp)
-				if err != nil {
-					ch <- result{nil, err}
-					return
-				}
-				if tmp[0] == '\n' {
-					break
-				}
-			}
-		}
-		if cl > 0 {
-			body := make([]byte, cl)
-			_, err := io.ReadFull(h.stdoutPipe, body)
-			if err != nil {
-				ch <- result{nil, err}
-				return
-			}
-			ch <- result{body, nil}
-			return
-		}
 		var buf bytes.Buffer
 		tmp := make([]byte, 1)
 		for {
@@ -607,49 +539,7 @@ func TestNotificationsAreIgnored(t *testing.T) {
 	}
 }
 
-func TestContentLengthHeaderFormat(t *testing.T) {
-	imgSup := &mockImageSupplier{name: "mock"}
-	h := newMCPTestHarness(t, []supplier.ImageSupplier{imgSup}, nil)
-	defer h.close()
 
-	h.sendRequestWithContentLength("ping", 1, nil)
-	resp := h.readResponse()
-	if resp["error"] != nil {
-		t.Fatalf("ping error with Content-Length: %v", resp["error"])
-	}
-}
-
-// TestContentLengthCRLF tests the TypeScript SDK format: "Content-Length: N\r\n\r\nBODY".
-func TestContentLengthCRLF(t *testing.T) {
-	imgSup := &mockImageSupplier{name: "mock"}
-	h := newMCPTestHarness(t, []supplier.ImageSupplier{imgSup}, nil)
-	defer h.close()
-
-	msg := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "ping",
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(data))
-	if _, err := h.stdinPipe.Write([]byte(header)); err != nil {
-		t.Fatalf("write header: %v", err)
-	}
-	if _, err := h.stdinPipe.Write(data); err != nil {
-		t.Fatalf("write body: %v", err)
-	}
-
-	resp := h.readResponse()
-	if resp["error"] != nil {
-		t.Fatalf("ping error with CRLF Content-Length: %v", resp["error"])
-	}
-	if resp["result"] == nil {
-		t.Error("ping result should not be nil")
-	}
-}
 
 func TestToolsCall_errorResult(t *testing.T) {
 	imgSup := &mockImageSupplier{
@@ -883,30 +773,7 @@ func TestToolsCall_videoExtraArguments(t *testing.T) {
 // Unit tests for helper functions
 // ---------------------------------------------------------------------------
 
-func TestParseContentLength(t *testing.T) {
-	tests := []struct {
-		line string
-		want int
-	}{
-		{"Content-Length: 123", 123},
-		{"content-length: 456", 456},
-		{"CONTENT-LENGTH: 789", 789},
-		{"Content-Length: 0", 0},
-		{"", 0},
-		{"not a header", 0},
-		{"Content-Length: abc", 0},
-		{"Content-Length: 42\r", 0},
-		{"Content-Length: 100\n", 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.line, func(t *testing.T) {
-			got := parseContentLength(tt.line)
-			if got != tt.want {
-				t.Errorf("parseContentLength(%q) = %d, want %d", tt.line, got, tt.want)
-			}
-		})
-	}
-}
+
 
 func TestTrimTrailing(t *testing.T) {
 	tests := []struct {
@@ -1060,17 +927,7 @@ func TestJsonNumberUnmarshalError(t *testing.T) {
 	}
 }
 
-func TestConsumeLine(t *testing.T) {
-	r := bufio.NewReader(strings.NewReader("  \r\nremaining"))
-	consumeLine(r)
-	rest, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	if string(rest) != "remaining" {
-		t.Errorf("remaining = %q, want %q", string(rest), "remaining")
-	}
-}
+
 
 func TestMimeTypeFromURL(t *testing.T) {
 	tests := []struct {
