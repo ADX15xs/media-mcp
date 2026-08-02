@@ -75,6 +75,9 @@ func (d *DoubaoSeedreamAdapter) Name() string {
 }
 
 func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {
+	if req.Model == "" {
+		req.Model = d.Model
+	}
 	payload := map[string]interface{}{
 		"model":   req.Model,
 		"prompt":  req.Prompt,
