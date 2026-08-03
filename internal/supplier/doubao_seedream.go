@@ -12,16 +12,16 @@ import (
 
 // DoubaoSeedreamAdapter implements ImageSupplier for Volcengine's Doubao Seedream API.
 type DoubaoSeedreamAdapter struct {
-	BaseURL       string
-	APIKey        string
-	Model         string
-	Sizes         []string
-	DefaultSize   string
-	Models        []string
-	OutputFormat  string // "png" or "jpeg"
-	Watermark     *bool  // nil = let API decide
-	MaxImages     int    // for sequential generation
-	Config        *config.SupplierConfig
+	BaseURL      string
+	APIKey       string
+	Model        string
+	Sizes        []string
+	DefaultSize  string
+	Models       []string
+	OutputFormat string // "png" or "jpeg"
+	Watermark    *bool  // nil = let API decide
+	MaxImages    int    // for sequential generation
+	Config       *config.SupplierConfig
 }
 
 func NewDoubaoSeedreamAdapter(name string, cfg *config.SupplierConfig) *DoubaoSeedreamAdapter {
@@ -79,10 +79,10 @@ func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {
 		req.Model = d.Model
 	}
 	payload := map[string]interface{}{
-		"model":   req.Model,
-		"prompt":  req.Prompt,
-		"size":    defaultStr(req.Size, d.DefaultSize),
-		"output_format": d.OutputFormat,
+		"model":           req.Model,
+		"prompt":          req.Prompt,
+		"size":            defaultStr(req.Size, d.DefaultSize),
+		"output_format":   d.OutputFormat,
 		"response_format": "url",
 	}
 
@@ -212,4 +212,10 @@ func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {
 	}
 
 	return result
+}
+
+func init() {
+	RegisterImage("doubao_seedream", func(cfg *config.SupplierConfig) (ImageSupplier, error) {
+		return NewDoubaoSeedreamAdapter("doubao_seedream", cfg), nil
+	})
 }

@@ -268,3 +268,9 @@ func (a *AgnesVideoAdapter) pollTask(taskID, modelUsed string, req VideoRequest)
 		}
 	}
 }
+
+func init() {
+	RegisterVideo("agnes_video", func(cfg *config.SupplierConfig) (VideoSupplier, error) {
+		return NewAgnesVideoAdapter(cfg), nil
+	})
+}

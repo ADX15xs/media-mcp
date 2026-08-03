@@ -3,6 +3,7 @@ package supplier
 import (
 	"fmt"
 	"media-mcp/internal/config"
+	"sort"
 )
 
 // Registry is the factory that maps supplier names to their adapters.
@@ -13,6 +14,33 @@ type Registry struct {
 
 type configImageBuilder func(cfg *config.SupplierConfig) (ImageSupplier, error)
 type configVideoBuilder func(cfg *config.SupplierConfig) (VideoSupplier, error)
+
+// ---------------------------------------------------------------------------
+// Global default registry — adapters self-register via init().
+// Registration happens only during init(); the registry is read-only at runtime,
+// so no synchronization is needed.
+// ---------------------------------------------------------------------------
+
+var defaultRegistry = NewRegistry()
+
+// RegisterImage adds a new image supplier implementation to the global registry.
+func RegisterImage(name string, fn configImageBuilder) {
+	defaultRegistry.RegisterImage(name, fn)
+}
+
+// RegisterVideo adds a new video supplier implementation to the global registry.
+func RegisterVideo(name string, fn configVideoBuilder) {
+	defaultRegistry.RegisterVideo(name, fn)
+}
+
+// BuildAll is a convenience wrapper that calls defaultRegistry.BuildAll(cfg).
+func BuildAll(cfg *config.GlobalConfig) ([]ImageSupplier, []VideoSupplier, []error) {
+	return defaultRegistry.BuildAll(cfg)
+}
+
+// ---------------------------------------------------------------------------
+// Registry methods
+// ---------------------------------------------------------------------------
 
 func NewRegistry() *Registry {
 	return &Registry{
@@ -31,48 +59,88 @@ func (r *Registry) RegisterVideo(name string, fn configVideoBuilder) {
 	r.videoImplementations[name] = fn
 }
 
-// BuildImage creates all enabled image suppliers from config.
-func (r *Registry) BuildImage(cfg *config.GlobalConfig) ([]ImageSupplier, error) {
-	var suppliers []ImageSupplier
-	for name, sCfg := range cfg.Suppliers {
+// BuildAll creates all enabled image and video suppliers from config.
+// Unregistered suppliers fall back to HTTPGenericAdapter (image) or
+// HTTPGenericVideoAdapter (video). Errors are collected but do not
+// abort the entire build — failed suppliers are skipped.
+func (r *Registry) BuildAll(cfg *config.GlobalConfig) ([]ImageSupplier, []VideoSupplier, []error) {
+	// Sort keys for deterministic order.
+	names := make([]string, 0, len(cfg.Suppliers))
+	for n := range cfg.Suppliers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var imageSuppliers []ImageSupplier
+	var videoSuppliers []VideoSupplier
+	var errs []error
+
+	for _, name := range names {
+		sCfg := cfg.Suppliers[name]
 		if !sCfg.Enabled {
 			continue
 		}
-		if sCfg.SupplierType == "video" {
-			continue
+
+		// Build image supplier if type allows.
+		if sCfg.SupplierType == "image" || sCfg.SupplierType == "both" {
+			sup, err := r.buildImageOne(name, &sCfg)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("image supplier %q: %w", name, err))
+			} else {
+				imageSuppliers = append(imageSuppliers, sup)
+			}
 		}
-		fn, ok := r.imageImplementations[name]
-		if !ok {
-			return nil, fmt.Errorf("no image supplier registered for %q", name)
+
+		// Build video supplier if type allows.
+		if sCfg.SupplierType == "video" || sCfg.SupplierType == "both" {
+			sup, err := r.buildVideoOne(name, &sCfg)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("video supplier %q: %w", name, err))
+			} else {
+				videoSuppliers = append(videoSuppliers, sup)
+			}
 		}
-		sup, err := fn(&sCfg)
-		if err != nil {
-			return nil, fmt.Errorf("build image supplier %q: %w", name, err)
-		}
-		suppliers = append(suppliers, sup)
+	}
+
+	return imageSuppliers, videoSuppliers, errs
+}
+
+// buildImageOne builds a single image supplier for the given name.
+// Falls back to HTTPGenericAdapter if the name is not registered.
+func (r *Registry) buildImageOne(name string, cfg *config.SupplierConfig) (ImageSupplier, error) {
+	if fn, ok := r.imageImplementations[name]; ok {
+		return fn(cfg)
+	}
+	// Fallback: generic OpenAI-compatible adapter.
+	return NewHTTPGenericAdapter(name, cfg), nil
+}
+
+// buildVideoOne builds a single video supplier for the given name.
+// Falls back to HTTPGenericVideoAdapter if the name is not registered.
+func (r *Registry) buildVideoOne(name string, cfg *config.SupplierConfig) (VideoSupplier, error) {
+	if fn, ok := r.videoImplementations[name]; ok {
+		return fn(cfg)
+	}
+	// Fallback: generic video adapter.
+	return NewHTTPGenericVideoAdapter(name, cfg), nil
+}
+
+// BuildImage creates all enabled image suppliers from config.
+// Deprecated: use BuildAll instead.
+func (r *Registry) BuildImage(cfg *config.GlobalConfig) ([]ImageSupplier, error) {
+	suppliers, _, errs := r.BuildAll(cfg)
+	if len(errs) > 0 {
+		return suppliers, errs[0]
 	}
 	return suppliers, nil
 }
 
 // BuildVideo creates all enabled video suppliers from config.
+// Deprecated: use BuildAll instead.
 func (r *Registry) BuildVideo(cfg *config.GlobalConfig) ([]VideoSupplier, error) {
-	var suppliers []VideoSupplier
-	for name, sCfg := range cfg.Suppliers {
-		if !sCfg.Enabled {
-			continue
-		}
-		if sCfg.SupplierType != "video" && sCfg.SupplierType != "both" {
-			continue
-		}
-		fn, ok := r.videoImplementations[name]
-		if !ok {
-			return nil, fmt.Errorf("no video supplier registered for %q", name)
-		}
-		sup, err := fn(&sCfg)
-		if err != nil {
-			return nil, fmt.Errorf("build video supplier %q: %w", name, err)
-		}
-		suppliers = append(suppliers, sup)
+	_, suppliers, errs := r.BuildAll(cfg)
+	if len(errs) > 0 {
+		return suppliers, errs[0]
 	}
 	return suppliers, nil
 }

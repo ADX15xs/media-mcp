@@ -89,18 +89,7 @@ func (h *HTTPGenericAdapter) GenImage(req ImageRequest) *ImageResult {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Set auth based on config
-	switch {
-	case h.Config.AUTHMethod == "bearer" || h.Config.AUTHMethod == "":
-		httpReq.Header.Set("Authorization", "Bearer "+h.APIKey)
-	case h.Config.AUTHMethod == "basic":
-		httpReq.Header.Set("Authorization", "Basic "+h.APIKey)
-	case h.Config.CustomHeader != "":
-		httpReq.Header.Set(h.Config.CustomHeader, h.APIKey)
-	default:
-		httpReq.Header.Set("Authorization", "Bearer "+h.APIKey)
-	}
+	setAuthHeader(httpReq, h.Config, h.APIKey)
 
 	for k, v := range h.CustomHeaders {
 		httpReq.Header.Set(k, v)
@@ -152,39 +141,3 @@ func (h *HTTPGenericAdapter) GenImage(req ImageRequest) *ImageResult {
 
 	return result
 }
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "...[truncated]"
-}
-
-// intMax returns v if it's a positive number, otherwise def.
-func intMax(a interface{}, def int) int {
-	switch n := a.(type) {
-	case float64:
-		if n > 0 {
-			return int(n)
-		}
-	case int:
-		if n > 0 {
-			return n
-		}
-	}
-	return def
-}
-
-// defaultStr returns s if non-empty, otherwise def.
-func defaultStr(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
-// maxInt calls intMax for backwards compatibility.
-func maxInt(a interface{}, def int) int {
-	return intMax(a, def)
-}
-

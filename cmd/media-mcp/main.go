@@ -37,57 +37,25 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// --- Dynamically create suppliers from config ---
-	var imageSuppliers []supplier.ImageSupplier
-	var videoSuppliers []supplier.VideoSupplier
+	// --- Build suppliers from config via the registry ---
+	// Adapters self-register via init() in their respective files.
+	// Unregistered names fall back to HTTPGenericAdapter or
+	// HTTPGenericVideoAdapter automatically.
+	imageSuppliers, videoSuppliers, buildErrs := supplier.BuildAll(cfg)
 
-	for name, sCfg := range cfg.Suppliers {
-		if !sCfg.Enabled {
-			fmt.Fprintf(os.Stderr, "[media-mcp] Supplier %q is disabled, skipping\n", name)
-			continue
-		}
-
-		switch name {
-		case "senseNova":
-			adapter := &supplier.SenseNovaAdapter{
-				BaseURL:       sCfg.BaseURL,
-				APIKey:        sCfg.APIKey,
-				Model:         defaultStr(sCfg.Model, "sensenova-u1-fast"),
-				Size:          defaultStr(sCfg.Size, "2752x1536"),
-				N:             maxInt(sCfg.Extra["n"], 1),
-				CustomHeaders: sCfg.Headers,
-				ExtraFields:   sCfg.Extra,
-				Config:        &sCfg,
-			}
-			imageSuppliers = append(imageSuppliers, adapter)
-			fmt.Fprintf(os.Stderr, "[media-mcp] Registered supplier: %s (%s)\n", adapter.Name(), sCfg.BaseURL)
-
-		case "agnes_ai":
-			adapter := supplier.NewAgnesAIAdapter(&sCfg)
-			imageSuppliers = append(imageSuppliers, adapter)
-			fmt.Fprintf(os.Stderr, "[media-mcp] Registered supplier: %s (%s)\n", adapter.Name(), sCfg.BaseURL)
-
-		case "doubao_seedream":
-			adapter := supplier.NewDoubaoSeedreamAdapter(name, &sCfg)
-			imageSuppliers = append(imageSuppliers, adapter)
-			fmt.Fprintf(os.Stderr, "[media-mcp] Registered supplier: %s (%s)\n", adapter.Name(), sCfg.BaseURL)
-
-		case "agnes_video":
-			adapter := supplier.NewAgnesVideoAdapter(&sCfg)
-			videoSuppliers = append(videoSuppliers, adapter)
-			fmt.Fprintf(os.Stderr, "[media-mcp] Registered video supplier: %s (%s)\n", adapter.Name(), sCfg.BaseURL)
-
-		default:
-			adapter := supplier.NewHTTPGenericAdapter(name, &sCfg)
-			if sCfg.SupplierType == "image" || sCfg.SupplierType == "both" {
-				imageSuppliers = append(imageSuppliers, adapter)
-				fmt.Fprintf(os.Stderr, "[media-mcp] Registered generic supplier: %s (%s)\n", name, sCfg.BaseURL)
-			}
-		}
+	for _, err := range buildErrs {
+		fmt.Fprintf(os.Stderr, "[media-mcp] Warning: %v\n", err)
 	}
 
-	if len(imageSuppliers) == 0 {
-		log.Fatal("No enabled suppliers found in config. Please check config.yml")
+	if len(imageSuppliers) == 0 && len(videoSuppliers) == 0 {
+		log.Fatal("No enabled suppliers could be built. Please check config.yml")
+	}
+
+	for _, sup := range imageSuppliers {
+		fmt.Fprintf(os.Stderr, "[media-mcp] Registered image supplier: %s\n", sup.Name())
+	}
+	for _, sup := range videoSuppliers {
+		fmt.Fprintf(os.Stderr, "[media-mcp] Registered video supplier: %s\n", sup.Name())
 	}
 
 	// Create MCP server and start listening on stdio.
@@ -98,25 +66,4 @@ func main() {
 	if err := server.Start(); err != nil {
 		log.Fatalf("MCP server error: %v", err)
 	}
-}
-
-func defaultStr(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
-func maxInt(a interface{}, def int) int {
-	switch v := a.(type) {
-	case float64:
-		if v > 0 {
-			return int(v)
-		}
-	case int:
-		if v > 0 {
-			return v
-		}
-	}
-	return def
 }

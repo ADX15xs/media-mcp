@@ -15,18 +15,29 @@ import (
 
 // SenseNovaAdapter implements ImageSupplier for the SenseNova platform.
 type SenseNovaAdapter struct {
-	BaseURL         string
-	APIKey          string
-	Model           string
-	Size            string
-	N               int
-	CustomHeaders   map[string]string
-	ExtraFields     map[string]interface{}
-	Config          *config.SupplierConfig // original config for reference
+	BaseURL       string
+	APIKey        string
+	Model         string
+	Size          string
+	N             int
+	CustomHeaders map[string]string
+	ExtraFields   map[string]interface{}
+	Config        *config.SupplierConfig // original config for reference
 }
 
 func init() {
-	// register itself with the default factory when imported.
+	RegisterImage("senseNova", func(cfg *config.SupplierConfig) (ImageSupplier, error) {
+		return &SenseNovaAdapter{
+			BaseURL:       cfg.BaseURL,
+			APIKey:        cfg.APIKey,
+			Model:         defaultStr(cfg.Model, "sensenova-u1-fast"),
+			Size:          defaultStr(cfg.Size, "2752x1536"),
+			N:             intMax(cfg.Extra["n"], 1),
+			CustomHeaders: cfg.Headers,
+			ExtraFields:   cfg.Extra,
+			Config:        cfg,
+		}, nil
+	})
 }
 
 // Name returns the unique identifier for this supplier.

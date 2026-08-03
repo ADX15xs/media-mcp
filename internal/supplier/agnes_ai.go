@@ -16,14 +16,14 @@ import (
 // AgnesAIAdapter implements ImageSupplier for Agnes AI platform.
 // Handles both Image 2.0 Flash and 2.1 Flash with their unique extra_body structure.
 type AgnesAIAdapter struct {
-	BaseURL       string
-	APIKey        string
-	Model         string
-	Size          string
-	N             int
-	CustomHeaders map[string]string
-	ExtraFields   map[string]interface{}
-	Config        *config.SupplierConfig
+	BaseURL         string
+	APIKey          string
+	Model           string
+	Size            string
+	N               int
+	CustomHeaders   map[string]string
+	ExtraFields     map[string]interface{}
+	Config          *config.SupplierConfig
 	SupportedRatios []string
 }
 
@@ -38,14 +38,14 @@ func NewAgnesAIAdapter(cfg *config.SupplierConfig) *AgnesAIAdapter {
 	}
 
 	return &AgnesAIAdapter{
-		BaseURL:       cfg.BaseURL,
-		APIKey:        cfg.APIKey,
-		Model:         defaultStr(cfg.Model, "agnes-image-2.1-flash"),
-		Size:          defaultStr(cfg.Size, "1024x768"),
-		N:             maxInt(cfg.Extra["n"], 1),
-		CustomHeaders: cfg.Headers,
-		ExtraFields:   cfg.Extra,
-		Config:        cfg,
+		BaseURL:         cfg.BaseURL,
+		APIKey:          cfg.APIKey,
+		Model:           defaultStr(cfg.Model, "agnes-image-2.1-flash"),
+		Size:            defaultStr(cfg.Size, "1024x768"),
+		N:               maxInt(cfg.Extra["n"], 1),
+		CustomHeaders:   cfg.Headers,
+		ExtraFields:     cfg.Extra,
+		Config:          cfg,
 		SupportedRatios: ratios,
 	}
 }
@@ -153,7 +153,7 @@ func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {
 
 	var apiResp struct {
 		Created int64 `json:"created"`
-		Data []struct {
+		Data    []struct {
 			URL           string `json:"url"`
 			B64Json       string `json:"b64_json"`
 			RevisedPrompt string `json:"revised_prompt"`
@@ -204,4 +204,10 @@ func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {
 	}
 
 	return result
+}
+
+func init() {
+	RegisterImage("agnes_ai", func(cfg *config.SupplierConfig) (ImageSupplier, error) {
+		return NewAgnesAIAdapter(cfg), nil
+	})
 }
