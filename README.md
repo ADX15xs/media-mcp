@@ -157,15 +157,16 @@ make build
 
 ## 新增供应商
 
-只需三步：
+只需两步：
 
-1. **写 Adapter**（约 50-80 行 Go 代码）— 实现 `ImageSupplier` 接口
-2. **在 main.go 的 switch 里加一行** — 注册新供应商
-3. **在 config.yml 里加一段配置** — 启用它
+1. **写 Adapter**（约 50-80 行 Go 代码）— 实现 `ImageSupplier` 接口，并通过 `init()` 调用 `supplier.RegisterImage(name, fn)` 自注册
+2. **在 config.yml 里加一段配置** — 启用它
+
+> `main.go` 调用 `supplier.BuildAll(cfg)` 统一构建所有启用的供应商，无需手动改 `main.go`。未注册的供应商名会自动 fallback 到下方的 Generic HTTP 适配器。
 
 ### Generic HTTP 适配器
 
-对于 OpenAI 兼容格式的供应商（如大多数第三方生图平台），无需写代码，直接加配置：
+对于 OpenAI 兼容格式的供应商（如大多数第三方生图平台），无需写代码，直接加配置即可被 `BuildAll` 自动识别：
 
 ```yaml
 suppliers:
@@ -179,13 +180,7 @@ suppliers:
     auth_method: bearer    # options: bearer, basic, custom_header
 ```
 
-然后只需在 `main.go` 中加一个 `case`：
-
-```go
-default:
-    adapter := supplier.NewHTTPGenericAdapter(name, &sCfg)
-    imageSuppliers = append(imageSuppliers, adapter)
-```
+`my_supplier` 这个名字未在 registry 中注册，`BuildAll` 会自动为其创建 `HTTPGenericAdapter`（图像）或 `HTTPGenericVideoAdapter`（视频），无需任何额外代码。
 
 ## 配置变量展开
 

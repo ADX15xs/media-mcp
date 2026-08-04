@@ -49,7 +49,7 @@ images-generations/                ← 各供应商 API 文档参考（Agnes.md 
 - **工具命名**: `{supplier}_generateImage` / `{supplier}_generateVideo`，由 MCP server 根据启用供应商动态生成
 - **认证方式**: `config.yml` 中 `auth_method` 支持 `bearer`（默认）、`basic`、`custom_header`
 - **环境变量展开**: 配置值中的 `${VAR}` 在启动时展开；缺失变量保留原值，运行时报错
-- **供应商注册**: main.go 用显式 `switch` 按 name 创建对应适配器（registry 包提供工厂但 main.go 仍用 switch）
+- **供应商注册**: 适配器通过 `init()` 自注册到 `registry` 包；`main.go` 调用 `supplier.BuildAll(cfg)` 统一构建，未注册的供应商名自动 fallback 到 `HTTPGenericAdapter` / `HTTPGenericVideoAdapter`
 - **视频生成**: 异步模式，提交 task_id 后每 5s 轮询，最长等 10 分钟
 - **错误处理**: 标准 Go error，日志到 stderr，JSON-RPC 响应到 stdout
 - **测试**: 各包目录下的 `_test.go` 文件，遵循标准 Go 测试约定

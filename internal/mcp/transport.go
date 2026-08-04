@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,7 +68,7 @@ func (s *Server) Start() error {
 		case "tools/list":
 			s.handleToolsList(msg)
 		case "tools/call":
-			s.handleToolCall(msg)
+			go s.handleToolCall(msg)
 		case "ping":
 			s.sendResult(msg.ID, map[string]interface{}{})
 		default:
@@ -268,7 +269,7 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 				}
 				content = append(content, map[string]interface{}{
 					"type":     "image",
-					"data":     string(fileData),
+					"data":     base64.StdEncoding.EncodeToString(fileData),
 					"mimeType": mimeTypeFromURL(url),
 				})
 			}
@@ -373,6 +374,8 @@ func (s *Server) write(v interface{}) {
 	}
 	// Use newline-delimited JSON (NDJSON) format — one JSON message per line.
 	// This is the MCP standard for stdio transport.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	data = append(data, '\n')
 	os.Stdout.Write(data)
 	os.Stdout.Sync()

@@ -26,10 +26,11 @@ func intMax(v interface{}, def int) int {
 
 // truncate shortens a string to max runes, appending an ellipsis if truncated.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max] + "...[truncated]"
+	return string(runes[:max]) + "...[truncated]"
 }
 
 // maxInt calls intMax for backwards compatibility.
