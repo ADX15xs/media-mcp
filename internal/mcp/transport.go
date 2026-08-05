@@ -256,7 +256,8 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 		for _, url := range result.URLs {
 			if strings.HasPrefix(url, "http") {
 				content = append(content, map[string]interface{}{
-					"type": "image-uri",
+					"type": "resource_link",
+					"name": urlName(url),
 					"uri":  url,
 				})
 			} else {
