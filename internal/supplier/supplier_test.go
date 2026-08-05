@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"media-mcp/internal/config"
+	"strings"
 	"testing"
 )
 
@@ -496,5 +497,122 @@ func TestVideoResult(t *testing.T) {
 	}
 	if r.FrameRate != 30.0 {
 		t.Errorf("FrameRate = %v", r.FrameRate)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fracToNumFrames / ToolName stability
+// ---------------------------------------------------------------------------
+
+func TestFracToNumFrames(t *testing.T) {
+	tests := []struct {
+		seconds, frameRate, want int
+	}{
+		{3, 24, 73},    // ~3s (doc: 81 for exactly 3.4s; nearest 8n+1 to 72 is 73)
+		{5, 24, 121},   // 5s -> 121 (doc)
+		{10, 24, 241},  // 10s -> 241 (doc)
+		{18, 24, 433},  // 432 frames -> nearest 8n+1 is 433 (18.04s), within the 441 cap
+		{0, 24, 0},     // invalid seconds
+		{5, 0, 0},      // invalid frame rate
+		{1, 24, 25},    // 24 -> nearest 8n+1 is 25
+	}
+	for _, tt := range tests {
+		got := fracToNumFrames(tt.seconds, tt.frameRate)
+		if got != tt.want {
+			t.Errorf("fracToNumFrames(%d, %d) = %d, want %d", tt.seconds, tt.frameRate, got, tt.want)
+		}
+	}
+}
+
+func TestDoubaoToolNameStable(t *testing.T) {
+	cfg := &config.SupplierConfig{
+		Model:   "doubao-seedream-5.0-lite",
+		BaseURL: "https://example.com",
+		Extra:   map[string]interface{}{},
+	}
+	// Default: config key wins (stable across model upgrades).
+	d := NewDoubaoSeedreamAdapter("doubao_seedream", cfg)
+	if got := d.Name(); got != "doubao_seedream" {
+		t.Errorf("Name() = %q, want %q (config key)", got, "doubao_seedream")
+	}
+
+	// Explicit override via extra.tool_name.
+	cfg2 := &config.SupplierConfig{
+		Model:   "doubao-seedream-5.0-lite",
+		BaseURL: "https://example.com",
+		Extra:   map[string]interface{}{"tool_name": "my_doubao"},
+	}
+	d2 := NewDoubaoSeedreamAdapter("doubao_seedream", cfg2)
+	if got := d2.Name(); got != "my_doubao" {
+		t.Errorf("Name() = %q, want %q (extra.tool_name)", got, "my_doubao")
+	}
+}
+
+func TestAgnesAICapabilities(t *testing.T) {
+	a := NewAgnesAIAdapter(&config.SupplierConfig{
+		BaseURL: "https://example.com",
+		Extra: map[string]interface{}{
+			"supported_ratios": []interface{}{"1:1", "16:9"},
+		},
+	})
+	cap := a.Capabilities()
+	if cap == "" {
+		t.Fatal("Capabilities() returned empty")
+	}
+	if !strings.Contains(cap, "1152x864") {
+		t.Errorf("Capabilities() should mention normalization, got %q", cap)
+	}
+	if !strings.Contains(cap, "16:9") {
+		t.Errorf("Capabilities() should list supported ratios, got %q", cap)
+	}
+}
+
+func TestIntFromExtra(t *testing.T) {
+	tests := []struct {
+		in   interface{}
+		want int
+	}{
+		{float64(1152), 1152}, // JSON/YAML float
+		{int(768), 768},       // YAML int
+		{float64(0), 0},       // non-positive
+		{int(-1), 0},
+		{"121", 0}, // wrong type
+		{nil, 0},
+	}
+	for _, tt := range tests {
+		if got := intFromExtra(tt.in); got != tt.want {
+			t.Errorf("intFromExtra(%v) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestAgnesVideoAdapterFromConfig(t *testing.T) {
+	// YAML numbers arrive as int; the adapter must pick them up (not fall back).
+	a := NewAgnesVideoAdapter(&config.SupplierConfig{
+		BaseURL: "https://example.com",
+		Extra: map[string]interface{}{
+			"width":      int(640),
+			"height":     int(360),
+			"num_frames": int(81),
+			"frame_rate": int(30),
+		},
+	})
+	if a.Width != 640 || a.Height != 360 || a.NumFrames != 81 || a.FrameRate != 30 {
+		t.Errorf("adapter got %dx%d %dframes %dfps, want 640x360 81frames 30fps",
+			a.Width, a.Height, a.NumFrames, a.FrameRate)
+	}
+
+	// Float values (e.g. from JSON) still work.
+	b := NewAgnesVideoAdapter(&config.SupplierConfig{
+		BaseURL: "https://example.com",
+		Extra: map[string]interface{}{
+			"width":      float64(1280),
+			"height":     float64(720),
+			"num_frames": float64(241),
+			"frame_rate": float64(24),
+		},
+	})
+	if b.Width != 1280 || b.NumFrames != 241 {
+		t.Errorf("float extra misread: %dx%d %dframes", b.Width, b.Height, b.NumFrames)
 	}
 }

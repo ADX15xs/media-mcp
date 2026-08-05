@@ -165,6 +165,9 @@ seconds = num_frames / frame_rate
 | 约 10 秒 | `num_frames: 241`, `frame_rate: 24` |
 | 约 18 秒 | `num_frames: 441`, `frame_rate: 24` |
 
+> MCP 工具的 `duration`（秒）参数会在适配器内自动换算为 `num_frames`
+> （取最近的 8n+1 值，上限 441），无需手动指定 `num_frames`。
+
 ### 支持分辨率档位
 
 | 档位 | 说明 |

@@ -18,6 +18,7 @@ type DoubaoSeedreamAdapter struct {
 	Sizes        []string
 	DefaultSize  string
 	Models       []string
+	ToolName     string // stable MCP tool identifier
 	OutputFormat string // "png" or "jpeg"
 	Watermark    *bool  // nil = let API decide
 	MaxImages    int    // for sequential generation
@@ -52,6 +53,16 @@ func NewDoubaoSeedreamAdapter(name string, cfg *config.SupplierConfig) *DoubaoSe
 		}
 	}
 
+	// Tool name is stable: default to the config key so clients keep working
+	// across model upgrades; allow an explicit override via extra.tool_name.
+	toolName := name
+	if name == "" {
+		toolName = "doubao_seedream"
+	}
+	if v, ok := cfg.Extra["tool_name"].(string); ok && v != "" {
+		toolName = v
+	}
+
 	return &DoubaoSeedreamAdapter{
 		BaseURL:      cfg.BaseURL,
 		APIKey:       cfg.APIKey,
@@ -59,6 +70,7 @@ func NewDoubaoSeedreamAdapter(name string, cfg *config.SupplierConfig) *DoubaoSe
 		Sizes:        sizes,
 		DefaultSize:  defaultStr(cfg.Size, "2K"),
 		Models:       models,
+		ToolName:     toolName,
 		OutputFormat: outputFormat,
 		Watermark:    wp,
 		MaxImages:    intMax(cfg.Extra["max_images"], 1),
@@ -67,11 +79,7 @@ func NewDoubaoSeedreamAdapter(name string, cfg *config.SupplierConfig) *DoubaoSe
 }
 
 func (d *DoubaoSeedreamAdapter) Name() string {
-	// Use first model as name identifier, fallback to config key
-	if len(d.Models) > 0 {
-		return d.Models[0]
-	}
-	return "doubao_seedream"
+	return d.ToolName
 }
 
 func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {

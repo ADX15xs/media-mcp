@@ -53,3 +53,10 @@ type VideoSupplier interface {
 	Name() string                         // unique supplier name
 	GenVideo(req VideoRequest) *VideoResult // call the supplier's video API
 }
+
+// CapabilityProvider is an optional interface a supplier can implement to
+// expose capability notes that the MCP server appends to the tool description,
+// so agents can pick valid parameters without external docs.
+type CapabilityProvider interface {
+	Capabilities() string
+}

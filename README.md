@@ -23,7 +23,7 @@
 |--------|---------|------|------|---------|
 | **SenseNova** | `senseNova` | sensenova-u1-fast | token.sensenova.cn | base64 自动保存为临时文件 |
 | **Agnes AI** | `agnes_ai` | agnes-image-2.0-flash / 2.1-flash | api.agnes-ai.cn | `response_format` 需放在 `extra_body` 内 |
-| **Doubao Seedream** | `doubao_seedream` | 5.0-lite / 5.0-pro / 4.5 / 4.0 | ark.cn-beijing.volces.com | 支持 `output_format`、`watermark`、组图生成、联网搜索 |
+| **Doubao Seedream** | `doubao_seedream` | 5.0-lite / 5.0-pro / 4.5 / 4.0 | ark.cn-beijing.volces.com | 支持 `output_format`、`watermark`、组图生成、联网搜索；工具名默认用配置键名（`doubao_seedream_generateImage`），可用 `extra.tool_name` 自定义 |
 | **Agnes Video** | `agnes_video` | agnes-video-v2.0 | api.agnes-ai.cn | 异步任务，自动轮询，返回 video_url |
 
 ## 视频生成支持

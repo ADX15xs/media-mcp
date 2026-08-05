@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -29,11 +30,20 @@ type AgnesAIAdapter struct {
 
 func NewAgnesAIAdapter(cfg *config.SupplierConfig) *AgnesAIAdapter {
 	ratios := []string{"1:1"}
-	if raw, ok := cfg.Extra["supported_ratios"].([]interface{}); ok {
+	if raw, ok := cfg.Extra["supported_ratios"].([]interface{}); ok && len(raw) > 0 {
+		ratios = ratios[:0]
 		for _, r := range raw {
 			if rs, ok := r.(string); ok && rs != "" {
 				ratios = append(ratios, rs)
 			}
+		}
+	}
+	seen := make(map[string]bool, len(ratios))
+	unique := ratios[:0]
+	for _, r := range ratios {
+		if !seen[r] {
+			seen[r] = true
+			unique = append(unique, r)
 		}
 	}
 
@@ -46,12 +56,21 @@ func NewAgnesAIAdapter(cfg *config.SupplierConfig) *AgnesAIAdapter {
 		CustomHeaders:   cfg.Headers,
 		ExtraFields:     cfg.Extra,
 		Config:          cfg,
-		SupportedRatios: ratios,
+		SupportedRatios: unique,
 	}
 }
 
 func (a *AgnesAIAdapter) Name() string {
 	return "agnes_ai"
+}
+
+// Capabilities describes the size/ratio normalization rules agents should know
+// before picking parameters: the API rounds sizes up to standard tiers.
+func (a *AgnesAIAdapter) Capabilities() string {
+	return "Size note: the API normalizes requested sizes to standard tiers " +
+		"(e.g. 1024x768 -> 1152x864 for 4:3 @1K). " +
+		"Use size + ratio for predictable output; supported ratios: " +
+		strings.Join(a.SupportedRatios, ", ") + "."
 }
 
 func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {

@@ -99,9 +99,13 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 
 	for _, sup := range s.imageSuppliers {
 		name := fmt.Sprintf("%s_generateImage", sup.Name())
+		desc := fmt.Sprintf("Generate an image using the %s supplier", sup.Name())
+		if c, ok := sup.(supplier.CapabilityProvider); ok {
+			desc += ". " + c.Capabilities()
+		}
 		tools = append(tools, map[string]interface{}{
 			"name":        name,
-			"description": fmt.Sprintf("Generate an image using the %s supplier", sup.Name()),
+			"description": desc,
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -133,9 +137,13 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 
 	for _, sup := range s.videoSuppliers {
 		name := fmt.Sprintf("%s_generateVideo", sup.Name())
+		desc := fmt.Sprintf("Generate a video using the %s supplier", sup.Name())
+		if c, ok := sup.(supplier.CapabilityProvider); ok {
+			desc += ". " + c.Capabilities()
+		}
 		tools = append(tools, map[string]interface{}{
 			"name":        name,
-			"description": fmt.Sprintf("Generate a video using the %s supplier", sup.Name()),
+			"description": desc,
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

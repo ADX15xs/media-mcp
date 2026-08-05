@@ -96,6 +96,9 @@ suppliers:
     model: doubao-seedream-5.0-lite
     size: 2K
     extra:
+      # MCP 工具名默认取配置键名（doubao_seedream_generateImage），
+      # 模型升级不影响工具名；如需自定义可取消注释：
+      # tool_name: doubao_seedream
       output_format: png           # png 或 jpeg
       watermark: false             # 是否添加水印
       # 支持流式输出 (stream: true)
