@@ -364,9 +364,12 @@ func TestToolsCall(t *testing.T) {
 		t.Errorf("text should contain URL, got: %s", text)
 	}
 	if len(content) >= 2 {
-		resourceItem := content[1].(map[string]interface{})
-		if resourceItem["type"] != "resource" {
-			t.Errorf("content[1].type = %v", resourceItem["type"])
+		imgItem := content[1].(map[string]interface{})
+		if imgItem["type"] != "image-uri" {
+			t.Errorf("content[1].type = %v, want image-uri", imgItem["type"])
+		}
+		if imgItem["uri"] != "https://example.com/out.png" {
+			t.Errorf("content[1].uri = %v", imgItem["uri"])
 		}
 	}
 }
@@ -465,6 +468,19 @@ func TestToolsCall_video(t *testing.T) {
 	}
 	if !strings.Contains(text, "Duration: 10 seconds") {
 		t.Errorf("text should contain duration, got: %s", text)
+	}
+	if len(content) < 2 {
+		t.Fatal("expected resource_link content block for video URL")
+	}
+	linkItem := content[1].(map[string]interface{})
+	if linkItem["type"] != "resource_link" {
+		t.Errorf("content[1].type = %v, want resource_link", linkItem["type"])
+	}
+	if linkItem["uri"] != "https://example.com/video.mp4" {
+		t.Errorf("content[1].uri = %v", linkItem["uri"])
+	}
+	if linkItem["name"] != "video.mp4" {
+		t.Errorf("content[1].name = %v, want video.mp4", linkItem["name"])
 	}
 }
 

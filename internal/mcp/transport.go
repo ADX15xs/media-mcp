@@ -256,11 +256,8 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 		for _, url := range result.URLs {
 			if strings.HasPrefix(url, "http") {
 				content = append(content, map[string]interface{}{
-					"type": "resource",
-					"resource": map[string]interface{}{
-						"uri":      url,
-						"mimeType": mimeTypeFromURL(url),
-					},
+					"type": "image-uri",
+					"uri":  url,
 				})
 			} else {
 				fileData, err := os.ReadFile(url)
@@ -320,11 +317,9 @@ func (s *Server) sendVideoResult(id *jsonNumber, result *supplier.VideoResult) {
 		for _, url := range result.URLs {
 			if strings.HasPrefix(url, "http") {
 				content = append(content, map[string]interface{}{
-					"type": "resource",
-					"resource": map[string]interface{}{
-						"uri":      url,
-						"mimeType": mimeTypeFromURL(url),
-					},
+					"type": "resource_link",
+					"name": urlName(url),
+					"uri":  url,
 				})
 			}
 		}
@@ -452,6 +447,21 @@ func mimeTypeFromURL(rawURL string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// urlName extracts a display name from a URL's last path segment.
+func urlName(rawURL string) string {
+	u := rawURL
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	if i := strings.LastIndex(u, "/"); i >= 0 {
+		u = u[i+1:]
+	}
+	if u == "" {
+		return rawURL
+	}
+	return u
 }
 
 // --- JSON-RPC types ---
