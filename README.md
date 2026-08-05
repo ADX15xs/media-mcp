@@ -113,18 +113,55 @@ make build
 ./media-mcp --config /path/to/config.yml
 ```
 
-### 5. 在 Reasonix 中注册（MCP stdio 方式）
+## 5. 接入 MCP 客户端
 
-在 `.mcp.json` 中添加：
+MCP 客户端以子进程方式启动服务器。对 `command`（二进制）和 `--config` 参数都**使用绝对路径**——
+相对路径会基于客户端自身的工作目录解析，而那通常并不是你的目录。
+
+### Reasonix (`config.toml`, `reasonix.toml`)
+
+```toml
+[[plugins]]
+name    = "media-mcp"
+type    = "stdio"
+command = "C:\\absolute\\path\\to\\media-mcp.exe"
+args    = ["--config", "C:\\absolute\\path\\to\\config.yml"]
+env     = { AGNES_AI_API_KEY = "${AGNES_AI_API_KEY}", SENSENOVA_API_KEY = "${SENSENOVA_API_KEY}", VOLC_API_KEY = "${VOLC_API_KEY}" }
+```
+
+### Claude Desktop（`claude_desktop_config.json`）
 
 ```json
 {
-  "mcp-server-media-mcp": {
-    "type": "local",
-    "enabled": true,
-    "command": ["./media-mcp"],
-    "environment": {
-      "SENSENOVA_API_KEY": "<your-sensenova-api-key>"
+  "mcpServers": {
+    "media-mcp": {
+      "command": "/absolute/path/to/media-mcp",
+      "args": ["--config", "/absolute/path/to/config.yml"],
+      "env": {
+        "AGNES_AI_API_KEY": "sk-your-agnes-key",
+        "SENSENOVA_API_KEY": "sk-your-sensenova-key",
+        "VOLC_API_KEY": "sk-your-volc-key"
+      }
+    }
+  }
+}
+```
+
+### VS Code（`settings.json` → `mcp.servers`）
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "media-mcp": {
+        "command": "C:\\absolute\\path\\to\\media-mcp.exe",
+        "args": ["--config", "C:\\absolute\\path\\to\\config.yml"],
+        "env": {
+          "AGNES_AI_API_KEY": "sk-your-agnes-key",
+          "SENSENOVA_API_KEY": "sk-your-sensenova-key",
+          "VOLC_API_KEY": "sk-your-volc-key"
+        }
+      }
     }
   }
 }
