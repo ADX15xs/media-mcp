@@ -4,7 +4,7 @@ MCP (Model Context Protocol) 服务器，将多种 AI 媒体生成 API 统一暴
 
 ## Project
 
-- **语言**: Go 1.26.3
+- **语言**: Go 1.25.0
 - **唯一依赖**: `gopkg.in/yaml.v3`
 - **入口**: `cmd/media-mcp/main.go`
 - **配置**: `config.yml`（YAML，支持 `${ENV_VAR}` 展开），可通过 `MEDIA_MCP_CONFIG` 环境变量指定

@@ -879,8 +879,10 @@ func TestOnlyInitializeSendsNotification(t *testing.T) {
 	go func() {
 		var buf [1]byte
 		h.stdoutPipe.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-		h.stdoutPipe.Read(buf[:])
-		ch <- struct{}{}
+		n, _ := h.stdoutPipe.Read(buf[:])
+		if n > 0 {
+			ch <- struct{}{}
+		}
 	}()
 	select {
 	case <-ch:
