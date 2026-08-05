@@ -29,18 +29,17 @@ suppliers:
   # ──────────────────────────────────────────────
   # 2. Agnes AI — Sapiens AI 图像/视频生成平台
   # ──────────────────────────────────────────────
-  # 图像模型：agnes-image-2.0-flash、agnes-image-2.1-flash
+  # 图像模型：agnes-image-2.1-flash
   # 视频模型：agnes-video-v2.0
   # 关键：response_format 必须放在 extra_body 内部
 
-  # 2.1 Agnes Image 2.0 Flash — 快速版，低信息密度
+  # 2.1 Agnes Image 2.1 Flash — 高信息密度优化版
   agnes_ai:
     enabled: false
     type: image
     api_key: ${AGNES_AI_API_KEY}
     base_url: https://api.agnes-ai.cn/v1/images/generations
     models:
-      - agnes-image-2.0-flash
       - agnes-image-2.1-flash
     default_model: agnes-image-2.1-flash
     size: 1024x768

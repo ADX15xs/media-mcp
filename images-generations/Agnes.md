@@ -4,7 +4,6 @@ Agnes AI 提供的图像和视频生成模型，包含三个子模型：
 
 | 模型 | Model ID | 类型 |
 | --- | --- | --- |
-| Agnes Image 2.0 Flash | `agnes-image-2.0-flash` | 文生图、图生图、多图合成 |
 | Agnes Image 2.1 Flash | `agnes-image-2.1-flash` | 文生图、图生图（高信息密度优化） |
 | Agnes Video V2.0 | `agnes-video-v2.0` | 文生视频、图生视频、关键帧动画（异步） |
 
@@ -21,7 +20,7 @@ curl https://api.agnes-ai.cn/v1/images/generations \
   -H "Authorization: Bearer $AGNES_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "agnes-image-2.0-flash",
+    "model": "agnes-image-2.1-flash",
     "prompt": "A clean product photo of a glass cube on a white studio background, soft shadows, high detail",
     "size": "1024x768",
     "extra_body": {
@@ -34,7 +33,7 @@ curl https://api.agnes-ai.cn/v1/images/generations \
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `model` | string | ✅ | 固定为 `agnes-image-2.0-flash` |
+| `model` | string | ✅ | 固定为 `agnes-image-2.1-flash` |
 | `prompt` | string | ✅ | 图像描述文本 |
 | `size` | string | ✅ | 输出尺寸，如 `1024x768`、`1024x1024`、`768x1024` |
 | `image` | string[] | 图生图必填 | 输入图像数组，支持公网 URL 或 Data URI Base64 |
