@@ -363,14 +363,18 @@ func TestToolsCall(t *testing.T) {
 	if !strings.Contains(text, "https://example.com/out.png") {
 		t.Errorf("text should contain URL, got: %s", text)
 	}
-	if len(content) >= 2 {
-		imgItem := content[1].(map[string]interface{})
-		if imgItem["type"] != "image-uri" {
-			t.Errorf("content[1].type = %v, want image-uri", imgItem["type"])
-		}
-		if imgItem["uri"] != "https://example.com/out.png" {
-			t.Errorf("content[1].uri = %v", imgItem["uri"])
-		}
+	if len(content) < 2 {
+		t.Fatal("expected resource_link content block for image URL")
+	}
+	linkItem := content[1].(map[string]interface{})
+	if linkItem["type"] != "resource_link" {
+		t.Errorf("content[1].type = %v, want resource_link", linkItem["type"])
+	}
+	if linkItem["uri"] != "https://example.com/out.png" {
+		t.Errorf("content[1].uri = %v", linkItem["uri"])
+	}
+	if linkItem["name"] != "out.png" {
+		t.Errorf("content[1].name = %v, want out.png", linkItem["name"])
 	}
 }
 
