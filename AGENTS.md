@@ -9,7 +9,7 @@ MCP (Model Context Protocol) 服务器，将多种 AI 媒体生成 API 统一暴
 - **入口**: `cmd/media-mcp/main.go`
 - **配置**: `config.yml`（YAML，支持 `${ENV_VAR}` 展开），可通过 `MEDIA_MCP_CONFIG` 环境变量指定
 - **MCP 协议**: stdio JSON-RPC，协议版本 `2024-11-05`，服务器名 `media-mcp-server`
-- **版本注入**: `serverInfo.version` 由 `make build` 时经 `-ldflags` 注入 `git describe --tags --always --dirty` 输出——tag 上为 tag 名（`v0.3.0`）、无 tag 降级为 `v0.2.0-3-g<hash>` 或短 hash、工作区有未提交改动追加 `-dirty`；未注入时（`go run`/`go test`）默认 `dev`
+- **版本注入**: CLI `--version`（`main.version`）与 `serverInfo.version`（`media-mcp/internal/mcp.version`）均由 `make build` 及 CI workflow 经 `-ldflags` 同时注入 `git describe --tags --always --dirty` 输出（workflow 用 tag 名 `GITHUB_REF_NAME`）——tag 上为 tag 名（`v0.3.0`）、无 tag 降级为 `v0.2.0-3-g<hash>` 或短 hash、工作区有未提交改动追加 `-dirty`；未注入时（`go run`/`go test`）默认 `dev`
 - **受忽略文件**: `.env`, `config.yml`, `build/`
 
 ## Commands
