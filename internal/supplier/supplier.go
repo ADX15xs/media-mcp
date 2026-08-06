@@ -2,14 +2,12 @@ package supplier
 
 // ImageRequest holds a unified image generation request.
 type ImageRequest struct {
-	Supplier   string                 // e.g. "senseNova"
-	Prompt     string                 // required
-	NegativePrompt string             // optional, some suppliers support it
-	Model      string                 // supplier-specific model ID or name
-	Size       string                 // "2752x1536", etc.
-	N          int                    // number of images (default 1)
-	Style      string                 // style hint for the supplier
-	Extra      map[string]interface{} // arbitrary extra fields passed to the supplier
+	Supplier string                 // e.g. "senseNova"
+	Prompt   string                 // required
+	Model    string                 // supplier-specific model ID or name
+	Size     string                 // "2752x1536", etc.
+	N        int                    // number of images (default 1)
+	Extra    map[string]interface{} // supplier-specific params (declared via SchemaExtender)
 }
 
 // ImageResult is the unified result from an image generation call.
@@ -23,13 +21,15 @@ type ImageResult struct {
 
 // VideoRequest holds a unified video generation request.
 type VideoRequest struct {
-	Supplier   string                 // e.g. "runway"
-	Prompt     string                 // required
-	Model      string                 // supplier-specific model ID or name
-	Duration   int                    // duration in seconds
-	Style      string                 // style hint
-	Seed       *int                   // reproducibility seed
-	Extra      map[string]interface{} // arbitrary extra fields passed to the supplier
+	Supplier    string                 // e.g. "runway"
+	Prompt      string                 // required
+	Model       string                 // supplier-specific model ID or name
+	Duration    int                    // duration in seconds
+	Style       string                 // style hint
+	Seed        *int                   // reproducibility seed
+	AspectRatio string                 // optional, e.g. "9:16"; provider maps to width/height or ignores
+	Resolution  string                 // optional, e.g. "720p"; provider maps to width/height or ignores
+	Extra       map[string]interface{} // supplier-specific params (declared via SchemaExtender)
 }
 
 // VideoResult is the unified result from a video generation call.
@@ -59,4 +59,11 @@ type VideoSupplier interface {
 // so agents can pick valid parameters without external docs.
 type CapabilityProvider interface {
 	Capabilities() string
+}
+
+// SchemaExtender lets a supplier declare provider-specific tool parameters:
+// the transport merges ExtraInputSchema into the tool's inputSchema and
+// forwards matching call arguments to the supplier via req.Extra.
+type SchemaExtender interface {
+	ExtraInputSchema() map[string]interface{}
 }

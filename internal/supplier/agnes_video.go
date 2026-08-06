@@ -103,9 +103,33 @@ func (a *AgnesVideoAdapter) Name() string {
 	return "agnes_video"
 }
 
+func (a *AgnesVideoAdapter) ExtraInputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"task_id": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: re-attach to an existing task instead of creating a new one. Use the task_id reported by a previous failed call to recover its output without paying for a regeneration.",
+		},
+		"video_id": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: re-attach using a known video_id (alternative to task_id)",
+		},
+	}
+}
+
 // resumeKeys are consumed by the adapter itself and must never be forwarded
 // into the creation payload.
 var resumeKeys = []string{"task_id", "video_id"}
+
+// videoSizeTable maps aspect_ratio × resolution to backend width/height.
+// Agnes keeps the ratio but re-aligns pixels to multiples of 32 (probed
+// 2026-08-06: 720x1280 -> 704x1280, 1080x1920 -> 1088x1920).
+var videoSizeTable = SizeTable{
+	"9:16": {"480p": {480, 854}, "720p": {720, 1280}, "1080p": {1080, 1920}},
+	"16:9": {"480p": {854, 480}, "720p": {1280, 720}, "1080p": {1920, 1080}},
+	"1:1":  {"480p": {480, 480}, "720p": {720, 720}, "1080p": {1080, 1080}},
+	"4:3":  {"480p": {640, 480}, "720p": {960, 720}, "1080p": {1440, 1080}},
+	"3:4":  {"480p": {480, 640}, "720p": {720, 960}, "1080p": {1080, 1440}},
+}
 
 // GenVideo calls the Agnes AI video generation API and returns the result.
 // When req.Extra carries a task_id (and optionally a video_id) it skips
@@ -132,11 +156,25 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 		numFrames = fracToNumFrames(req.Duration, a.FrameRate)
 	}
 
+	// Per-request size override; keep in locals, never touch the shared
+	// Width/Height (tools/call runs concurrently). 16:9/720p defaults apply
+	// only when at least one size field is provided.
+	width, height := a.Width, a.Height
+	if req.AspectRatio != "" || req.Resolution != "" {
+		ar := defaultStr(req.AspectRatio, "16:9")
+		res := defaultStr(req.Resolution, "720p")
+		w, h, err := videoSizeTable.ResolveSize(ar, res)
+		if err != nil {
+			return &VideoResult{Request: req, Error: err}
+		}
+		width, height = w, h
+	}
+
 	payload := map[string]interface{}{
 		"model":      modelUsed,
 		"prompt":     req.Prompt,
-		"width":      a.Width,
-		"height":     a.Height,
+		"width":      width,
+		"height":     height,
 		"num_frames": numFrames,
 		"frame_rate": a.FrameRate,
 	}
@@ -169,7 +207,7 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 	endpoint := strings.TrimSuffix(a.BaseURL, "/")
 
 	logf("video create: POST %s model=%s num_frames=%d frame_rate=%d %dx%d",
-		endpoint, modelUsed, numFrames, a.FrameRate, a.Width, a.Height)
+		endpoint, modelUsed, numFrames, a.FrameRate, width, height)
 	debugf("video create payload: %s", truncate(string(jsonData), 1500))
 
 	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))

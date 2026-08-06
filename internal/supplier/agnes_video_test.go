@@ -1,7 +1,9 @@
 package supplier
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"media-mcp/internal/config"
 	"net/http"
 	"net/http/httptest"
@@ -216,6 +218,93 @@ func TestGenVideo_resumeSkipsCreation(t *testing.T) {
 	}
 	if len(res.URLs) != 1 || res.URLs[0] != "https://cdn.example.com/resumed.mp4" {
 		t.Errorf("URLs = %v", res.URLs)
+	}
+}
+
+func TestGenVideo_sizeMapping(t *testing.T) {
+	var posts int32
+	var lastBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			atomic.AddInt32(&posts, 1)
+			b, _ := io.ReadAll(r.Body)
+			lastBody = string(b)
+			fmt.Fprint(w, `{"task_id":"task_1","video_id":"video_1"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"completed","progress":100,"seconds":"5.0","url":"https://cdn.example.com/ok.mp4"}`)
+	}))
+	defer srv.Close()
+
+	a := newTestAgnesVideo(srv.URL)
+	cases := []struct {
+		name         string
+		ar, res      string
+		wantW, wantH int
+	}{
+		{"vertical-default-res", "9:16", "", 720, 1280},
+		{"vertical-1080p", "9:16", "1080p", 1080, 1920},
+		{"landscape-default-res", "16:9", "", 1280, 720},
+		{"resolution-only-16x9-default", "", "1080p", 1920, 1080},
+		{"square-720p", "1:1", "720p", 720, 720},
+		{"none-keeps-config-default", "", "", 1152, 768},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := a.GenVideo(VideoRequest{Prompt: "x", AspectRatio: c.ar, Resolution: c.res})
+			if res.Error != nil {
+				t.Fatalf("GenVideo() error = %v", res.Error)
+			}
+			var payload struct {
+				Width  int `json:"width"`
+				Height int `json:"height"`
+			}
+			if err := json.Unmarshal([]byte(lastBody), &payload); err != nil {
+				t.Fatalf("parse last body: %v (%s)", err, lastBody)
+			}
+			if payload.Width != c.wantW || payload.Height != c.wantH {
+				t.Errorf("payload = %dx%d, want %dx%d (body: %s)", payload.Width, payload.Height, c.wantW, c.wantH, lastBody)
+			}
+			if strings.Contains(lastBody, "aspect_ratio") || strings.Contains(lastBody, "resolution") {
+				t.Errorf("size control fields leaked into upstream payload: %s", lastBody)
+			}
+		})
+	}
+}
+
+func TestGenVideo_invalidSizeValuesRejected(t *testing.T) {
+	var posts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			atomic.AddInt32(&posts, 1)
+		}
+		fmt.Fprint(w, `{"status":"completed","progress":100,"seconds":"5.0","url":"https://cdn.example.com/ok.mp4"}`)
+	}))
+	defer srv.Close()
+
+	a := newTestAgnesVideo(srv.URL)
+	cases := []struct {
+		name    string
+		ar, res string
+		want    string
+	}{
+		{"bad-ratio", "5:2", "", "unsupported aspect_ratio"},
+		{"bad-res", "", "999p", "unsupported resolution"},
+		{"bad-res-with-ratio", "9:16", "4k", "unsupported resolution"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := a.GenVideo(VideoRequest{Prompt: "x", AspectRatio: c.ar, Resolution: c.res})
+			if res.Error == nil {
+				t.Fatal("GenVideo() error = nil, want rejection before POST")
+			}
+			if !strings.Contains(res.Error.Error(), c.want) {
+				t.Errorf("error = %v, want containing %q", res.Error, c.want)
+			}
+		})
+	}
+	if posts != 0 {
+		t.Errorf("POST count = %d, want 0 (invalid size must be rejected before submission)", posts)
 	}
 }
 

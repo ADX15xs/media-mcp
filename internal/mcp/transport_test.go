@@ -53,6 +53,15 @@ func (m *mockVideoSupplier) GenVideo(req supplier.VideoRequest) *supplier.VideoR
 	}
 }
 
+type mockExtImageSupplier struct {
+	mockImageSupplier
+	extraSchema map[string]interface{}
+}
+
+func (m *mockExtImageSupplier) ExtraInputSchema() map[string]interface{} {
+	return m.extraSchema
+}
+
 // ---------------------------------------------------------------------------
 // Test harness — replaces os.Stdin / os.Stdout with pipes
 // ---------------------------------------------------------------------------
@@ -718,11 +727,10 @@ func TestToolsCall_extraArguments(t *testing.T) {
 	h.sendRequest("tools/call", 12, map[string]interface{}{
 		"name": "mock_generateImage",
 		"arguments": map[string]interface{}{
-			"prompt":          "test prompt",
-			"model":           "test-model",
-			"size":            "1024x768",
-			"n":               3,
-			"negative_prompt": "bad stuff",
+			"prompt": "test prompt",
+			"model":  "test-model",
+			"size":   "1024x768",
+			"n":      3,
 		},
 	})
 	h.readResponse()
@@ -739,8 +747,82 @@ func TestToolsCall_extraArguments(t *testing.T) {
 	if capturedReq.N != 3 {
 		t.Errorf("N = %d", capturedReq.N)
 	}
-	if capturedReq.NegativePrompt != "bad stuff" {
-		t.Errorf("NegativePrompt = %q", capturedReq.NegativePrompt)
+	if capturedReq.Extra != nil {
+		t.Errorf("Extra = %v, want nil (supplier declares no extra params)", capturedReq.Extra)
+	}
+}
+
+func TestToolsList_schemaExtender(t *testing.T) {
+	imgSup := &mockExtImageSupplier{
+		mockImageSupplier: mockImageSupplier{name: "extImg"},
+		extraSchema: map[string]interface{}{
+			"ratio": map[string]interface{}{"type": "string"},
+			"image": map[string]interface{}{"type": "string"},
+		},
+	}
+	h := newMCPTestHarness(t, []supplier.ImageSupplier{imgSup}, nil)
+	defer h.close()
+
+	h.sendRequest("initialize", 1, nil)
+	h.readResponse()
+	h.readResponse()
+
+	h.sendRequest("tools/list", 2, nil)
+	resp := h.readResponse()
+	if resp["error"] != nil {
+		t.Fatalf("tools/list error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]interface{})
+	tools, _ := result["tools"].([]interface{})
+	schema, _ := tools[0].(map[string]interface{})["inputSchema"].(map[string]interface{})
+	props, _ := schema["properties"].(map[string]interface{})
+	for _, k := range []string{"prompt", "ratio", "image"} {
+		if props[k] == nil {
+			t.Errorf("missing schema property %q", k)
+		}
+	}
+}
+
+func TestToolsCall_schemaExtenderForward(t *testing.T) {
+	var capturedReq supplier.ImageRequest
+	imgSup := &mockExtImageSupplier{
+		mockImageSupplier: mockImageSupplier{
+			name: "extImg",
+			genImage: func(req supplier.ImageRequest) *supplier.ImageResult {
+				capturedReq = req
+				return &supplier.ImageResult{URLs: []string{"https://example.com/img.png"}, ModelUsed: "mock", Request: req}
+			},
+		},
+		extraSchema: map[string]interface{}{
+			"ratio": map[string]interface{}{"type": "string"},
+			"image": map[string]interface{}{"type": "string"},
+		},
+	}
+	h := newMCPTestHarness(t, []supplier.ImageSupplier{imgSup}, nil)
+	defer h.close()
+
+	h.sendRequest("initialize", 1, nil)
+	h.readResponse()
+	h.readResponse()
+
+	h.sendRequest("tools/call", 14, map[string]interface{}{
+		"name": "extImg_generateImage",
+		"arguments": map[string]interface{}{
+			"prompt": "a cat",
+			"ratio":  "16:9",
+			"image":  "https://example.com/ref.png",
+		},
+	})
+	h.readResponse()
+
+	if capturedReq.Prompt != "a cat" {
+		t.Errorf("Prompt = %q", capturedReq.Prompt)
+	}
+	if capturedReq.Extra == nil || capturedReq.Extra["ratio"] != "16:9" {
+		t.Errorf("ratio not forwarded to Extra: %v", capturedReq.Extra)
+	}
+	if capturedReq.Extra == nil || capturedReq.Extra["image"] != "https://example.com/ref.png" {
+		t.Errorf("image not forwarded to Extra: %v", capturedReq.Extra)
 	}
 }
 

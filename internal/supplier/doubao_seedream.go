@@ -222,6 +222,35 @@ func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {
 	return result
 }
 
+func (d *DoubaoSeedreamAdapter) ExtraInputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"negative_prompt": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: negative prompt",
+		},
+		"image": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: reference image (URL or base64 data URI) for image-to-image",
+		},
+		"max_images": map[string]interface{}{
+			"type":        "number",
+			"description": "Optional: generate up to N images sequentially (reference image count + generated images must be <= 15)",
+		},
+		"stream": map[string]interface{}{
+			"type":        "boolean",
+			"description": "Optional: enable streaming response",
+		},
+		"optimize_mode": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: prompt optimization mode (only for 5.0 pro / 4.0)",
+		},
+		"web_search": map[string]interface{}{
+			"type":        "boolean",
+			"description": "Optional: enable web search grounding (5.0 lite)",
+		},
+	}
+}
+
 func init() {
 	RegisterImage("doubao_seedream", func(cfg *config.SupplierConfig) (ImageSupplier, error) {
 		return NewDoubaoSeedreamAdapter("doubao_seedream", cfg), nil

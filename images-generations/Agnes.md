@@ -189,7 +189,7 @@ seconds = num_frames / frame_rate
 
 实测结论：
 
-- **创建接口有限流**：连续提交 3 个视频任务，第 2、3 个直接 `HTTP 429`。任务应串行提交，不要并发。
+- **创建接口限流：1 请求/分钟**。错误消息：`video generation rate limit exceeded: allows 1 requests per 1 minute(s)`。连续提交多个任务时第 2 个起直接 429，任务**必须串行提交且间隔 ≥ 60s**（2026-08-06 实测确认）。
 - **状态接口限流更激进**：4 路并发轮询时约 **29%** 的请求返回 `HTTP 429 video status query rate limit exceeded`；1s 间隔单路轮询也会零星命中。
 - **状态接口会间歇性返回 `HTTP 404 {"error":{"code":404,"message":"task not found"}}`**，但任务在服务端仍会正常跑完并出现在后台记录里。
 

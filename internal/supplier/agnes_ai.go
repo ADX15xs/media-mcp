@@ -73,6 +73,29 @@ func (a *AgnesAIAdapter) Capabilities() string {
 		strings.Join(a.SupportedRatios, ", ") + "."
 }
 
+func (a *AgnesAIAdapter) ExtraInputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"ratio": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: output aspect ratio for Image 2.1 Flash. Supported: " + strings.Join(a.SupportedRatios, ", ") + ".",
+			"enum":        a.SupportedRatios,
+		},
+		"image": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: reference image (URL or base64 data URI) for image-to-image",
+		},
+		"response_format": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: output format",
+			"enum":        []string{"url", "b64_json"},
+		},
+		"return_base64": map[string]interface{}{
+			"type":        "boolean",
+			"description": "Optional: return base64-encoded image data instead of a URL",
+		},
+	}
+}
+
 func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {
 	if req.Model == "" {
 		req.Model = a.Model

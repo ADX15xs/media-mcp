@@ -108,7 +108,7 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 			"description": desc,
 			"inputSchema": map[string]interface{}{
 				"type": "object",
-				"properties": map[string]interface{}{
+				"properties": mergeExtraSchemaProps(sup, map[string]interface{}{
 					"prompt": map[string]interface{}{
 						"type":        "string",
 						"description": "The prompt to generate the image",
@@ -125,11 +125,7 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 						"type":        "number",
 						"description": "Optional: number of images to generate",
 					},
-					"negative_prompt": map[string]interface{}{
-						"type":        "string",
-						"description": "Optional: negative prompt",
-					},
-				},
+				}),
 				"required": []string{"prompt"},
 			},
 		})
@@ -146,7 +142,7 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 			"description": desc,
 			"inputSchema": map[string]interface{}{
 				"type": "object",
-				"properties": map[string]interface{}{
+				"properties": mergeExtraSchemaProps(sup, map[string]interface{}{
 					"prompt": map[string]interface{}{
 						"type":        "string",
 						"description": "The prompt to generate the video",
@@ -167,15 +163,17 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 						"type":        "number",
 						"description": "Optional: reproducibility seed",
 					},
-					"task_id": map[string]interface{}{
+					"aspect_ratio": map[string]interface{}{
 						"type":        "string",
-						"description": "Optional: re-attach to an existing task instead of creating a new one. Use the task_id reported by a previous failed call to recover its output without paying for a regeneration.",
+						"description": "Optional: output aspect ratio (e.g. 9:16 for vertical). Mapped to width/height for the backend.",
+						"enum":        []string{"9:16", "16:9", "1:1", "4:3", "3:4"},
 					},
-					"video_id": map[string]interface{}{
+					"resolution": map[string]interface{}{
 						"type":        "string",
-						"description": "Optional: re-attach using a known video_id (alternative to task_id)",
+						"description": "Optional: output resolution tier (480p, 720p, 1080p)",
+						"enum":        []string{"480p", "720p", "1080p"},
 					},
-				},
+				}),
 				"required": []string{"prompt"},
 			},
 		})
@@ -201,14 +199,14 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 	for _, sup := range s.imageSuppliers {
 		prefix := sup.Name() + "_generateImage"
 		if req.Name == prefix {
-			imageReq := supplier.ImageRequest{
-				Prompt:         getString(req.Arguments, "prompt"),
-				NegativePrompt: getString(req.Arguments, "negative_prompt"),
-				Model:          getString(req.Arguments, "model"),
-				Size:           getString(req.Arguments, "size"),
-				N:              getInt(req.Arguments, "n"),
-				Supplier:       sup.Name(),
-			}
+		imageReq := supplier.ImageRequest{
+			Prompt:   getString(req.Arguments, "prompt"),
+			Model:    getString(req.Arguments, "model"),
+			Size:     getString(req.Arguments, "size"),
+			N:        getInt(req.Arguments, "n"),
+			Supplier: sup.Name(),
+		}
+		imageReq.Extra = forwardDeclaredArgs(sup, req.Arguments, imageBaseArgs)
 			result := sup.GenImage(imageReq)
 			s.sendImageResult(msg.ID, result)
 			return
@@ -219,11 +217,13 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 		prefix := sup.Name() + "_generateVideo"
 		if req.Name == prefix {
 			videoReq := supplier.VideoRequest{
-				Prompt:   getString(req.Arguments, "prompt"),
-				Model:    getString(req.Arguments, "model"),
-				Duration: getInt(req.Arguments, "duration"),
-				Style:    getString(req.Arguments, "style"),
-				Supplier: sup.Name(),
+				Prompt:      getString(req.Arguments, "prompt"),
+				Model:       getString(req.Arguments, "model"),
+				Duration:    getInt(req.Arguments, "duration"),
+				Style:       getString(req.Arguments, "style"),
+				AspectRatio: getString(req.Arguments, "aspect_ratio"),
+				Resolution:  getString(req.Arguments, "resolution"),
+				Supplier:    sup.Name(),
 			}
 			if seed, ok := req.Arguments["seed"]; ok {
 				if n, ok := seed.(float64); ok {
@@ -231,14 +231,7 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 					videoReq.Seed = &seedInt
 				}
 			}
-			for _, k := range []string{"task_id", "video_id"} {
-				if v := getString(req.Arguments, k); v != "" {
-					if videoReq.Extra == nil {
-						videoReq.Extra = map[string]interface{}{}
-					}
-					videoReq.Extra[k] = v
-				}
-			}
+			videoReq.Extra = forwardDeclaredArgs(sup, req.Arguments, videoBaseArgs)
 			result := sup.GenVideo(videoReq)
 			s.sendVideoResult(msg.ID, result)
 			return
@@ -246,6 +239,55 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 	}
 
 	s.sendError(msg.ID, -32603, "Internal error: supplier not found for tool "+req.Name)
+}
+
+// imageBaseArgs / videoBaseArgs are the tool args mapped to first-class
+// request fields; everything else reaches an adapter only via SchemaExtender.
+var imageBaseArgs = []string{"prompt", "model", "size", "n"}
+var videoBaseArgs = []string{"prompt", "model", "duration", "style", "seed", "aspect_ratio", "resolution"}
+
+// mergeExtraSchemaProps merges SchemaExtender-declared properties into the
+// base schema; base properties win so suppliers can't shadow them.
+func mergeExtraSchemaProps(sup interface{}, props map[string]interface{}) map[string]interface{} {
+	if ext, ok := sup.(supplier.SchemaExtender); ok {
+		for k, v := range ext.ExtraInputSchema() {
+			if _, exists := props[k]; !exists {
+				props[k] = v
+			}
+		}
+	}
+	return props
+}
+
+// forwardDeclaredArgs copies SchemaExtender-declared call arguments into
+// req.Extra; base arguments are first-class fields and never forwarded here.
+func forwardDeclaredArgs(sup interface{}, args map[string]interface{}, baseArgs []string) map[string]interface{} {
+	ext, ok := sup.(supplier.SchemaExtender)
+	if !ok {
+		return nil
+	}
+	var extra map[string]interface{}
+	for k := range ext.ExtraInputSchema() {
+		if containsStr(baseArgs, k) {
+			continue
+		}
+		if v, ok := args[k]; ok {
+			if extra == nil {
+				extra = map[string]interface{}{}
+			}
+			extra[k] = v
+		}
+	}
+	return extra
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
