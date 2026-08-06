@@ -50,11 +50,13 @@ images-generations/                ← 各供应商 API 文档参考（Agnes.md 
 - **认证方式**: `config.yml` 中 `auth_method` 支持 `bearer`（默认）、`basic`、`custom_header`
 - **环境变量展开**: 配置值中的 `${VAR}` 在启动时展开；缺失变量保留原值，运行时报错
 - **供应商注册**: 适配器通过 `init()` 自注册到 `registry` 包；`main.go` 调用 `supplier.BuildAll(cfg)` 统一构建，未注册的供应商名自动 fallback 到 `HTTPGenericAdapter` / `HTTPGenericVideoAdapter`
-- **provider 专属参数声明（`SchemaExtender`）**: 工具基础 schema 只含通用字段（图像 `prompt/model/size/n`；视频 `prompt/model/duration/style/seed/aspect_ratio/resolution`）。provider 专属参数（如 agnes 图像 `ratio`/图生图、doubao `negative_prompt`/`max_images` 等、agnes_video 重连 `task_id`/`video_id`）由各 adapter 实现 `SchemaExtender.ExtraInputSchema()` 声明：transport 合并进该工具 schema，并把匹配的调用参数转发进 `req.Extra`。未声明的参数不可达、也不会外泄到其他 provider（含通用兜底）。基础字段优先生效，provider 不可覆盖
-- **视频生成**: 异步模式。提交后先等 15s，再自适应轮询（5–30s），总超时 15 分钟。**创建接口限流 1 请求/分钟**（Agnes 实测），多任务必须串行提交且间隔 ≥ 60s
+- **provider 专属参数声明（`SchemaExtender`）**: 工具基础 schema 只含通用字段（图像 `prompt/model/size/n`；视频 `prompt/model/duration/style/seed/aspect_ratio/resolution`）。provider 专属参数（如 agnes 图像 `ratio`/图生图、doubao `negative_prompt`/`max_images` 等）由各 adapter 实现 `SchemaExtender.ExtraInputSchema()` 声明：transport 合并进该工具 schema，并把匹配的调用参数转发进 `req.Extra`。未声明的参数不可达、也不会外泄到其他 provider（含通用兜底）。基础字段优先生效，provider 不可覆盖。**未识别参数提示**: transport 把既非基础字段、也非声明字段的调用参数记入 `req.UnknownArgs`，在结果文本中追加 `Note: unexpected argument(s) ignored: ...` 提示，避免 agent 拼错参数名而无感知
+- **工具描述能力约束（`CapabilityProvider`）**: 实现该可选接口的 adapter 会把自己的约束说明追加到工具描述。agnes_video 声明「创建限流 1 请求/分钟须串行、时长上限 ~18s（num_frames≤441@24fps，超长 clamp）、输出 32 对齐不保证精确尺寸、video_id 为推荐轮询键」；doubao 声明「size 档位（按模型：5.0 lite 为 2K/3K/4K）或 WxH 像素两种方式都支持、不可混用」；agnes_ai 声明 size 归一化规则。**供应商偏好只出现在各自 Capabilities 里，transport 通用 schema/描述保持中性**
+- **视频生成（非阻塞两段式）**: `generateVideo` 仅提交任务，立即返回 `Status:"working"` + `task_id`/`video_id`，**不阻塞轮询**（根治客户端 `-32001` 请求超时）。完成状态由 `{supplier}_getVideoResult` 工具轮询：每次有界轮询 `statusPollCap`（20s，常量），未到终态返回 `working`，到终态返回 `completed`(URL) / `failed`(error)。仅实现 `VideoStatusProvider` 接口的 video supplier 才暴露 `getVideoResult` 工具。**创建接口限流 1 请求/分钟**（Agnes 实测），多任务须串行提交且间隔 ≥ 60s
 - **视频尺寸控制**: `aspect_ratio`（9:16/16:9/1:1/4:3/3:4）+ `resolution`（480p/720p/1080p）是 `VideoRequest` 的**第一等可选字段**（非 `Extra`），对所有视频 provider 通用；各 adapter 自行决定是否映射为 width/height。查表+校验逻辑在共享的 `supplier.SizeTable.ResolveSize`（数据由 provider 自持，无硬编码像素值，可复用无技术债）；agnes 的默认 16:9/720p 仅当至少传一个字段时生效，非法值显式报错。注意 agnes 上游对 width/height 会归一化（1152×768 → 实际 1088×832），像素不精确保证（探针校准后更新）
-- **视频轮询容错**: Agnes 状态接口会间歇性返回 404 / 429，但任务在服务端仍会跑完。所有 HTTP 失败一律视为**瞬时错误**，在双端点间回退重试；只有全部端点在 3 分钟宽限期内持续失败才放弃任务，且放弃时必定打印 `task_id` / `video_id` 与找回命令
-- **视频任务重连**: 仅 `agnes_video_generateVideo`（经 `SchemaExtender` 声明）支持可选的 `task_id` / `video_id` 参数，跳过创建直接挂到已有任务上取回结果，不重复计费
+- **视频轮询容错**: Agnes 状态接口会间歇性返回 404 / 429，但任务在服务端仍会跑完。所有 HTTP 失败一律视为**瞬时错误**，在双端点间回退重试，仅受单次 `getVideoResult` 的 `statusPollCap` 约束；cap 耗尽仍非终态则返回 `working`（不报错、不放弃任务），由调用方再次轮询
+- **视频任务查询/重连**: `{supplier}_getVideoResult(task_id[, video_id])` 查询已有任务状态，不重复创建、不重复计费；`task_id`/`video_id` 由 `generateVideo` 返回，schema 用 `anyOf` 约束两者至少传一个（描述中性，推荐键等供应商偏好由各 adapter 的 Capabilities 声明）。agnes 与 http_generic_video 均实现 `VideoStatusProvider`
+- **图像 HTTP 超时**: 所有图像 adapter 共享常量 `imageHTTPTimeout`（50s），确保在 MCP 客户端请求超时（~60s）前干净返回业务错误而非 `-32001`。图像上游为同步 API，无法两段式，此为最优止损
 - **调试日志**: `MEDIA_MCP_DEBUG=1` 将完整请求/响应体输出到 stderr
 - **错误处理**: 标准 Go error，日志到 stderr，JSON-RPC 响应到 stdout
 - **测试**: 各包目录下的 `_test.go` 文件，遵循标准 Go 测试约定
