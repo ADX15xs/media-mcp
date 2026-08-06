@@ -47,11 +47,11 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             BIN="${BIN}.exe"
             ARCHIVE="${BIN%.exe}.zip"
-            go build -ldflags "-s -w -X main.version=${VERSION}" -o "${BIN}" ./cmd/media-mcp
+            go build -ldflags "-s -w -X main.version=${VERSION} -X media-mcp/internal/mcp.version=${VERSION}" -o "${BIN}" ./cmd/media-mcp
             zip "${ARCHIVE}" "${BIN}"
           else
             ARCHIVE="${BIN}.tar.gz"
-            go build -ldflags "-s -w -X main.version=${VERSION}" -o "${BIN}" ./cmd/media-mcp
+            go build -ldflags "-s -w -X main.version=${VERSION} -X media-mcp/internal/mcp.version=${VERSION}" -o "${BIN}" ./cmd/media-mcp
             tar -czf "${ARCHIVE}" "${BIN}"
           fi
           mkdir -p dist

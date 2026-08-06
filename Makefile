@@ -15,7 +15,7 @@ endif
 # "<tag>-<n>-g<hash>" a few commits past a tag, bare short hash with no tag,
 # "-dirty" appended when the tree has uncommitted changes.
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X media-mcp/internal/mcp.version=$(VERSION)
+LDFLAGS := -X main.version=$(VERSION) -X media-mcp/internal/mcp.version=$(VERSION)
 
 .PHONY: build run clean windows linux darwin test
 
