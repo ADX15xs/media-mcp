@@ -23,6 +23,9 @@ type Server struct {
 	mu             sync.Mutex
 }
 
+// version is stamped at build time via -ldflags "-X media-mcp/internal/mcp.version=<git describe>"; "dev" when unset.
+var version = "dev"
+
 func NewServer(cfg *config.GlobalConfig) *Server {
 	return &Server{cfg: cfg}
 }
@@ -88,7 +91,7 @@ func (s *Server) handleInitialize(msg jsonMessage) {
 		},
 		"serverInfo": map[string]interface{}{
 			"name":    "media-mcp-server",
-			"version": "0.2.0",
+			"version": version,
 		},
 	}
 	s.sendResult(msg.ID, result)

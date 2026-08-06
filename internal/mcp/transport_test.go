@@ -260,8 +260,8 @@ func TestInitialize(t *testing.T) {
 	if info["name"] != "media-mcp-server" {
 		t.Errorf("serverInfo.name = %v", info["name"])
 	}
-	if info["version"] != "0.2.0" {
-		t.Errorf("serverInfo.version = %v", info["version"])
+	if info["version"] != "dev" {
+		t.Errorf("serverInfo.version = %v, want dev (build-time default; stamped via -ldflags on release builds)", info["version"])
 	}
 	caps, _ := result["capabilities"].(map[string]interface{})
 	if caps == nil {
