@@ -8,7 +8,7 @@ import (
 	"media-mcp/internal/config"
 	"net/http"
 	"net/url"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,6 +25,33 @@ type AgnesVideoAdapter struct {
 	CustomHeaders map[string]string
 	ExtraFields   map[string]interface{}
 	Config        *config.SupplierConfig
+
+	timing pollTiming
+}
+
+// pollTiming groups the polling schedule so it can be tuned per deployment and
+// compressed in tests.
+type pollTiming struct {
+	initialWait  time.Duration
+	base         time.Duration
+	min          time.Duration
+	max          time.Duration
+	totalTimeout time.Duration
+	// grace is how long every status endpoint may keep failing before the task
+	// is abandoned. It must comfortably exceed a typical generation so that a
+	// transient 404/429 storm can never discard a task that is still running.
+	grace time.Duration
+}
+
+func defaultPollTiming() pollTiming {
+	return pollTiming{
+		initialWait:  15 * time.Second,
+		base:         8 * time.Second,
+		min:          5 * time.Second,
+		max:          30 * time.Second,
+		totalTimeout: 15 * time.Minute,
+		grace:        3 * time.Minute,
+	}
 }
 
 func NewAgnesVideoAdapter(cfg *config.SupplierConfig) *AgnesVideoAdapter {
@@ -46,6 +73,17 @@ func NewAgnesVideoAdapter(cfg *config.SupplierConfig) *AgnesVideoAdapter {
 		frameRate = v
 	}
 
+	timing := defaultPollTiming()
+	if v := intFromExtra(cfg.Extra["initial_wait_seconds"]); v > 0 {
+		timing.initialWait = time.Duration(v) * time.Second
+	}
+	if v := intFromExtra(cfg.Extra["poll_interval_seconds"]); v > 0 {
+		timing.base = time.Duration(v) * time.Second
+	}
+	if v := intFromExtra(cfg.Extra["max_timeout_seconds"]); v > 0 {
+		timing.totalTimeout = time.Duration(v) * time.Second
+	}
+
 	return &AgnesVideoAdapter{
 		BaseURL:       cfg.BaseURL,
 		APIKey:        cfg.APIKey,
@@ -57,6 +95,7 @@ func NewAgnesVideoAdapter(cfg *config.SupplierConfig) *AgnesVideoAdapter {
 		CustomHeaders: cfg.Headers,
 		ExtraFields:   cfg.Extra,
 		Config:        cfg,
+		timing:        timing,
 	}
 }
 
@@ -64,8 +103,26 @@ func (a *AgnesVideoAdapter) Name() string {
 	return "agnes_video"
 }
 
+// resumeKeys are consumed by the adapter itself and must never be forwarded
+// into the creation payload.
+var resumeKeys = []string{"task_id", "video_id"}
+
 // GenVideo calls the Agnes AI video generation API and returns the result.
+// When req.Extra carries a task_id (and optionally a video_id) it skips
+// creation and re-attaches to that existing task instead.
 func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
+	modelUsed := defaultStr(req.Model, a.Model)
+
+	if taskID, _ := req.Extra["task_id"].(string); taskID != "" {
+		videoID, _ := req.Extra["video_id"].(string)
+		logf("video resume: re-attaching to existing task_id=%s video_id=%s", taskID, orNone(videoID))
+		return a.pollTask(taskID, videoID, modelUsed, req)
+	}
+	if videoID, _ := req.Extra["video_id"].(string); videoID != "" {
+		logf("video resume: re-attaching to existing video_id=%s", videoID)
+		return a.pollTask("", videoID, modelUsed, req)
+	}
+
 	numFrames := a.NumFrames
 
 	// VideoRequest.Duration is a vendor-agnostic seconds value; Agnes controls
@@ -76,7 +133,7 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 	}
 
 	payload := map[string]interface{}{
-		"model":      defaultStr(req.Model, a.Model),
+		"model":      modelUsed,
 		"prompt":     req.Prompt,
 		"width":      a.Width,
 		"height":     a.Height,
@@ -99,6 +156,9 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 	for k, v := range req.Extra {
 		payload[k] = v
 	}
+	for _, k := range resumeKeys {
+		delete(payload, k)
+	}
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
@@ -106,12 +166,13 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
-	url := a.BaseURL
-	if len(url) > 0 && url[len(url)-1] == '/' {
-		url = url[:len(url)-1]
-	}
+	endpoint := strings.TrimSuffix(a.BaseURL, "/")
 
-	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	logf("video create: POST %s model=%s num_frames=%d frame_rate=%d %dx%d",
+		endpoint, modelUsed, numFrames, a.FrameRate, a.Width, a.Height)
+	debugf("video create payload: %s", truncate(string(jsonData), 1500))
+
+	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return &VideoResult{Request: req, Error: fmt.Errorf("create request: %w", err)}
 	}
@@ -133,206 +194,376 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 		return &VideoResult{Request: req, Error: fmt.Errorf("read response: %w", err)}
 	}
 
+	debugf("video create response HTTP %d: %s", resp.StatusCode, truncate(string(body), 1500))
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &VideoResult{Request: req, Error: fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))}
+		hint := ""
+		if resp.StatusCode == 429 {
+			hint = " (Agnes rate-limits video creation; submit tasks sequentially rather than in parallel)"
+		}
+		return &VideoResult{Request: req, Error: fmt.Errorf("HTTP %d: %s%s", resp.StatusCode, truncate(string(body), 200), hint)}
 	}
 
-	var createResp struct {
-		TaskID  string `json:"task_id"`
-		ID      string `json:"id"`
-		VideoID string `json:"video_id"`
-		Status  string `json:"status"`
-		Error   struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		Raw map[string]interface{} `json:"-"`
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return &VideoResult{Request: req, Error: fmt.Errorf("parse creation response: %w (body: %s)", err, truncate(string(body), 200))}
 	}
-	if err := json.Unmarshal(body, &createResp); err != nil {
-		return &VideoResult{Request: req, Error: fmt.Errorf("parse creation response: %w", err)}
-	}
-	createResp.Raw = make(map[string]interface{})
-	json.Unmarshal(body, &createResp.Raw)
 
-	taskID := createResp.TaskID
+	if msg := errMessageFrom(raw); msg != "" {
+		return &VideoResult{Request: req, Error: fmt.Errorf("API error: %s", msg)}
+	}
+
+	taskID, _ := raw["task_id"].(string)
 	if taskID == "" {
-		taskID, _ = createResp.Raw["id"].(string)
+		taskID, _ = raw["id"].(string)
 	}
-	if taskID == "" {
-		return &VideoResult{Request: req, Error: fmt.Errorf("no task_id in response: %s", truncate(string(body), 200))}
+	videoID, _ := raw["video_id"].(string)
+
+	if taskID == "" && videoID == "" {
+		return &VideoResult{Request: req, Error: fmt.Errorf("no task_id/video_id in response: %s", truncate(string(body), 200))}
 	}
 
-	// The agnesapi polling endpoint takes the video_id, not the task_id.
-	videoID := createResp.VideoID
-	if videoID == "" {
-		videoID, _ = createResp.Raw["video_id"].(string)
-	}
+	// Logged unconditionally: this is the only handle that can recover the
+	// output if polling later goes wrong.
+	logf("video submitted: task_id=%s video_id=%s", orNone(taskID), orNone(videoID))
 
-	if createResp.Error.Message != "" {
-		return &VideoResult{Request: req, Error: fmt.Errorf("API error: %s", createResp.Error.Message)}
-	}
-
-	modelUsed := defaultStr(req.Model, a.Model)
-
-	result := a.pollTask(taskID, videoID, modelUsed, req)
-	if result.Error != nil {
-		return result
-	}
-	return result
+	return a.pollTask(taskID, videoID, modelUsed, req)
 }
 
-// pollTask falls back to /v1/videos/<task_id> when the creation response
-// has no video_id.
-func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req VideoRequest) *VideoResult {
-	// The polling endpoints live on the API host, not under /v1/videos.
-	host := a.BaseURL
-	if strings.HasSuffix(host, "/v1/videos") {
-		host = strings.TrimSuffix(host, "/v1/videos")
+// agnesStatus is the normalized view of both Agnes status endpoints, which
+// return overlapping but differently-shaped payloads.
+type agnesStatus struct {
+	Status    string
+	Progress  float64
+	URL       string
+	VideoID   string
+	Seconds   float64
+	FrameRate float64
+	ErrMsg    string
+}
+
+func parseAgnesStatus(body []byte) (agnesStatus, error) {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return agnesStatus{}, err
 	}
+
+	st := agnesStatus{}
+	st.Status, _ = raw["status"].(string)
+	if st.Status == "" {
+		st.Status, _ = raw["internal_status"].(string)
+	}
+	st.Progress = floatFrom(raw["progress"])
+	st.VideoID, _ = raw["video_id"].(string)
+	st.Seconds = floatFrom(raw["seconds"])
+	st.ErrMsg = errMessageFrom(raw)
+
+	for _, k := range []string{"url", "video_url", "result_url"} {
+		if v, ok := raw[k].(string); ok && v != "" {
+			st.URL = v
+			break
+		}
+	}
+	if st.URL == "" {
+		if md, ok := raw["metadata"].(map[string]interface{}); ok {
+			st.URL, _ = md["url"].(string)
+		}
+	}
+
+	for _, k := range []string{"request_params", "perf_params"} {
+		if p, ok := raw[k].(map[string]interface{}); ok {
+			if fr := floatFrom(p["frame_rate"]); fr > 0 {
+				st.FrameRate = fr
+				break
+			}
+		}
+	}
+	if st.FrameRate == 0 {
+		st.FrameRate = floatFrom(raw["frame_rate"])
+	}
+
+	return st, nil
+}
+
+type pollEndpoint struct {
+	label string
+	url   string
+	// carriesURL marks endpoints that expose the finished video URL.
+	// /v1/videos/<task_id> reports status only, never the URL.
+	carriesURL bool
+}
+
+// pollTask waits for an Agnes video task to finish.
+//
+// Both Agnes status endpoints are flaky under load: the status API is
+// aggressively rate-limited (observed 429 on ~30% of requests at 4 concurrent
+// pollers) and has been seen to answer 404 "task not found" for a task that
+// the backend goes on to complete. Every HTTP failure is therefore treated as
+// transient and retried against the alternate endpoint; the task is only
+// abandoned after the whole grace window elapses with no usable response.
+func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req VideoRequest) *VideoResult {
+	host := strings.TrimSuffix(strings.TrimSuffix(a.BaseURL, "/"), "/v1/videos")
 	host = strings.TrimSuffix(host, "/")
 
-	var pollURL string
-	if videoID != "" {
-		pollURL = fmt.Sprintf("%s/agnesapi?video_id=%s", host, url.QueryEscape(videoID))
-	} else {
-		pollURL = fmt.Sprintf("%s/v1/videos/%s", host, taskID)
-	}
-
 	client := &http.Client{Timeout: 30 * time.Second}
-	// Start with a settle period: Agnes rate-limits status queries (observed 429).
-	initialWait := 30 * time.Second
-	pollInterval := 5 * time.Second
-	maxTotalTimeout := 15 * time.Minute
-	minInterval := 5 * time.Second
-	maxInterval := 30 * time.Second
+	tm := a.timing
 
-	time.Sleep(initialWait)
+	time.Sleep(tm.initialWait)
 
 	startTime := time.Now()
+	interval := tm.base
 	lastStatus := ""
 	lastProgress := 0.0
 	lastProgressAt := time.Now()
-	interval := pollInterval
+	var firstFailureAt time.Time
 
 	for {
-		elapsed := time.Since(startTime)
-		if elapsed >= maxTotalTimeout {
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("timeout after %v (task_id=%s)", maxTotalTimeout, taskID)}
+		if elapsed := time.Since(startTime); elapsed >= tm.totalTimeout {
+			return a.abandon(req, modelUsed, taskID, videoID,
+				fmt.Errorf("timeout after %v (last status: %s)", tm.totalTimeout, orNone(lastStatus)))
 		}
 
-		httpReq, err := http.NewRequest("GET", pollURL, nil)
-		if err != nil {
-			time.Sleep(interval)
-			continue
-		}
-		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
-		for k, v := range a.CustomHeaders {
-			httpReq.Header.Set(k, v)
-		}
-
-		resp, err := client.Do(httpReq)
-		if err != nil {
-			time.Sleep(interval)
-			continue
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			time.Sleep(interval)
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			if resp.StatusCode == 404 {
-				return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("task %s not found", taskID)}
+		st, ok, failure := a.probe(client, host, taskID, videoID)
+		if !ok {
+			if firstFailureAt.IsZero() {
+				firstFailureAt = time.Now()
 			}
-			if resp.StatusCode == 429 {
-				// Rate limited: back off and retry.
-				interval *= 2
-				if interval > maxInterval {
-					interval = maxInterval
-				}
-				fmt.Fprintf(os.Stderr, "[media-mcp] video poll rate-limited, backing off to %v\n", interval)
-				time.Sleep(interval)
-				continue
+			stuck := time.Since(firstFailureAt)
+			if stuck >= tm.grace {
+				return a.abandon(req, modelUsed, taskID, videoID,
+					fmt.Errorf("status endpoints unreachable for %v (last failure: %s)", tm.grace, failure))
 			}
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("poll HTTP %d: %s", resp.StatusCode, truncate(string(body), 100))}
+			interval = growInterval(interval, tm.max)
+			logf("video poll transient failure (%s), retrying in %v [%v/%v of grace window]",
+				failure, interval, stuck.Truncate(time.Second), tm.grace)
+			time.Sleep(interval)
+			continue
+		}
+		firstFailureAt = time.Time{}
+
+		// /v1/videos/<task_id> reveals the video_id even when creation did not.
+		if videoID == "" && st.VideoID != "" {
+			videoID = st.VideoID
+			logf("video poll: discovered video_id=%s for task_id=%s", videoID, taskID)
 		}
 
-		var statusResp struct {
-			TaskID    string  `json:"task_id"`
-			Status    string  `json:"status"`
-			VideoURL  string  `json:"video_url"`
-			URL       string  `json:"url"`
-			FrameRate float64 `json:"frame_rate"`
-			Duration  int     `json:"duration"`
-			ErrorMsg  string  `json:"error_message"`
-			Progress  float64 `json:"progress"`
-			Raw       map[string]interface{}
-		}
-		if err := json.Unmarshal(body, &statusResp); err != nil {
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("parse status response: %w", err)}
-		}
-		statusResp.Raw = make(map[string]interface{})
-		json.Unmarshal(body, &statusResp.Raw)
-
-		if statusResp.Status != lastStatus {
-			lastStatus = statusResp.Status
-			fmt.Fprintf(os.Stderr, "[media-mcp] video status [%s]: %s (progress: %.0f%%)\n", taskID, statusResp.Status, statusResp.Progress)
+		if st.Status != lastStatus {
+			lastStatus = st.Status
+			logf("video status [%s]: %s (progress: %.0f%%)", orNone(taskID), orNone(st.Status), st.Progress)
 		}
 
 		// Adapt the polling interval to progress velocity: without a time-based
 		// ETA, a fast-moving progress means we should poll sooner, a stalled one
 		// means we should back off to avoid hammering the API.
-		if statusResp.Progress > lastProgress {
-			velocity := (statusResp.Progress - lastProgress) / time.Since(lastProgressAt).Seconds()
+		if st.Progress > lastProgress {
+			velocity := (st.Progress - lastProgress) / time.Since(lastProgressAt).Seconds()
 			switch {
-			case velocity >= 10: // %/s
-				interval = minInterval
+			case velocity >= 10:
+				interval = tm.min
 			case velocity >= 2:
-				interval = pollInterval
+				interval = tm.base
 			default:
-				interval = maxInterval
+				interval = tm.max
 			}
-			lastProgress = statusResp.Progress
+			lastProgress = st.Progress
 			lastProgressAt = time.Now()
 		}
 
-		switch statusResp.Status {
-		case "completed":
-			if statusResp.VideoURL == "" {
-				if url, ok := statusResp.Raw["url"].(string); ok {
-					statusResp.VideoURL = url
-				}
+		switch st.Status {
+		case "completed", "succeeded", "success":
+			videoURL := st.URL
+			if videoURL == "" {
+				videoURL = a.resolveURL(client, host, videoID)
 			}
+			if videoURL == "" {
+				return a.abandon(req, modelUsed, taskID, videoID,
+					fmt.Errorf("task completed but no video URL could be resolved"))
+			}
+			logf("video completed [%s]: %s", orNone(taskID), videoURL)
 			return &VideoResult{
 				Request:   req,
 				ModelUsed: modelUsed,
-				URLs:      []string{statusResp.VideoURL},
-				FrameRate: statusResp.FrameRate,
-				Duration:  statusResp.Duration,
+				URLs:      []string{videoURL},
+				FrameRate: st.FrameRate,
+				Duration:  int(st.Seconds + 0.5),
 			}
-		case "failed":
-			msg := statusResp.ErrorMsg
-			if msg == "" {
-				if e, ok := statusResp.Raw["error"].(string); ok && e != "" {
-					msg = e
-				} else if e, ok := statusResp.Raw["error_message"].(string); ok && e != "" {
-					msg = e
-				}
-			}
-			if msg == "" {
-				msg = "unknown error"
-			}
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("video generation failed: %s", msg)}
-		case "processing", "queued", "pending", "running", "in_progress":
-			time.Sleep(interval)
-			continue
+
+		case "failed", "error", "failure", "cancelled", "canceled":
+			return &VideoResult{Request: req, ModelUsed: modelUsed,
+				Error: fmt.Errorf("video generation failed: %s (task_id=%s)", defaultStr(st.ErrMsg, "unknown error"), orNone(taskID))}
+
 		default:
 			time.Sleep(interval)
-			continue
 		}
 	}
+}
+
+// probe queries the status endpoints in order of usefulness and returns the
+// first usable answer. ok=false means every endpoint failed this round.
+func (a *AgnesVideoAdapter) probe(client *http.Client, host, taskID, videoID string) (agnesStatus, bool, string) {
+	var failures []string
+
+	for _, ep := range a.endpoints(host, taskID, videoID) {
+		body, code, err := a.get(client, ep.url)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", ep.label, err))
+			continue
+		}
+		debugf("video poll %s -> HTTP %d: %s", ep.label, code, truncate(string(body), 600))
+
+		if code < 200 || code >= 300 {
+			failures = append(failures, fmt.Sprintf("%s: HTTP %d %s", ep.label, code, truncate(string(body), 120)))
+			continue
+		}
+		st, parseErr := parseAgnesStatus(body)
+		if parseErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: parse %v", ep.label, parseErr))
+			continue
+		}
+		if st.Status == "" {
+			failures = append(failures, fmt.Sprintf("%s: no status field", ep.label))
+			continue
+		}
+		// A status-only endpoint reporting completion is still useful; the URL
+		// gets resolved separately.
+		if !ep.carriesURL && st.Status == "completed" && st.URL == "" {
+			debugf("video poll %s reported completed without URL; will resolve via agnesapi", ep.label)
+		}
+		return st, true, ""
+	}
+
+	return agnesStatus{}, false, strings.Join(failures, "; ")
+}
+
+func (a *AgnesVideoAdapter) endpoints(host, taskID, videoID string) []pollEndpoint {
+	var eps []pollEndpoint
+	if videoID != "" {
+		eps = append(eps, pollEndpoint{
+			label:      "agnesapi(video_id)",
+			url:        fmt.Sprintf("%s/agnesapi?video_id=%s", host, url.QueryEscape(videoID)),
+			carriesURL: true,
+		})
+	}
+	if taskID != "" {
+		eps = append(eps, pollEndpoint{
+			label: "v1/videos(task_id)",
+			url:   fmt.Sprintf("%s/v1/videos/%s", host, url.PathEscape(taskID)),
+		})
+	}
+	return eps
+}
+
+// resolveURL fetches the finished video URL from agnesapi, which is the only
+// endpoint that carries it. Retried briefly because the URL can lag the
+// completed status by a few seconds.
+func (a *AgnesVideoAdapter) resolveURL(client *http.Client, host, videoID string) string {
+	if videoID == "" {
+		return ""
+	}
+	target := fmt.Sprintf("%s/agnesapi?video_id=%s", host, url.QueryEscape(videoID))
+	for attempt := 1; attempt <= 5; attempt++ {
+		body, code, err := a.get(client, target)
+		if err == nil && code >= 200 && code < 300 {
+			if st, parseErr := parseAgnesStatus(body); parseErr == nil && st.URL != "" {
+				return st.URL
+			}
+		}
+		debugf("video URL resolve attempt %d/5 failed (HTTP %d, err=%v)", attempt, code, err)
+		time.Sleep(time.Duration(attempt) * a.timing.min / 2)
+	}
+	return ""
+}
+
+func (a *AgnesVideoAdapter) get(client *http.Client, target string) ([]byte, int, error) {
+	httpReq, err := http.NewRequest("GET", target, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
+	for k, v := range a.CustomHeaders {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return body, resp.StatusCode, nil
+}
+
+// abandon reports a terminal polling failure with everything needed to recover
+// the output out-of-band, since the backend task usually did succeed.
+func (a *AgnesVideoAdapter) abandon(req VideoRequest, modelUsed, taskID, videoID string, cause error) *VideoResult {
+	logf("VIDEO TASK ABANDONED — the task may still be running or already finished on Agnes.")
+	logf("  task_id  = %s", orNone(taskID))
+	logf("  video_id = %s", orNone(videoID))
+	logf("  cause    = %v", cause)
+	if videoID != "" {
+		logf("  recover  : curl -H \"Authorization: Bearer $AGNES_AI_API_KEY\" \"https://api.agnes-ai.cn/agnesapi?video_id=%s\"", videoID)
+	}
+	if taskID != "" {
+		logf("  or re-attach: call agnes_video_generateVideo again with task_id=%s", taskID)
+	}
+
+	return &VideoResult{
+		Request:   req,
+		ModelUsed: modelUsed,
+		Error: fmt.Errorf("%w [task_id=%s video_id=%s] — the task may have completed on Agnes; "+
+			"re-attach by calling this tool again with task_id set to recover the output",
+			cause, orNone(taskID), orNone(videoID)),
+	}
+}
+
+func growInterval(cur, max time.Duration) time.Duration {
+	next := cur * 2
+	if next > max {
+		next = max
+	}
+	return next
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+func floatFrom(v interface{}) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case string:
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return f
+		}
+	}
+	return 0
+}
+
+// errMessageFrom extracts an error message from the several shapes Agnes uses:
+// {"error":"msg"}, {"error":{"message":"msg"}} and {"error_message":"msg"}.
+func errMessageFrom(raw map[string]interface{}) string {
+	if m, ok := raw["error_message"].(string); ok && m != "" {
+		return m
+	}
+	switch e := raw["error"].(type) {
+	case string:
+		return e
+	case map[string]interface{}:
+		if m, ok := e["message"].(string); ok {
+			return m
+		}
+	}
+	return ""
 }
 
 func init() {

@@ -177,9 +177,43 @@ seconds = num_frames / frame_rate
 
 支持宽高比：`16:9`、`9:16`、`1:1`、`4:3`、`3:4`
 
+### 两个查询端点的差异（实测）
+
+| 端点 | 状态字段 | 是否含视频 URL | 备注 |
+| --- | --- | --- | --- |
+| `agnesapi?video_id=` | `status` / `internal_status` | ✅ 顶层 `url` | **唯一**能拿到成品 URL 的端点，进度更新更快 |
+| `/v1/videos/<TASK_ID>` | `status` | ❌ 从不返回 URL | 但会返回 `video_id`，可据此转查 agnesapi；状态更新有滞后 |
+| `/v1/videos/<TASK_ID>/content` | — | ❌ | 恒返回 `{"detail":"Not Found"}`（HTTP 200 + `video/mp4` 头），不可用 |
+
+### 限流与瞬时错误（重要）
+
+实测结论：
+
+- **创建接口有限流**：连续提交 3 个视频任务，第 2、3 个直接 `HTTP 429`。任务应串行提交，不要并发。
+- **状态接口限流更激进**：4 路并发轮询时约 **29%** 的请求返回 `HTTP 429 video status query rate limit exceeded`；1s 间隔单路轮询也会零星命中。
+- **状态接口会间歇性返回 `HTTP 404 {"error":{"code":404,"message":"task not found"}}`**，但任务在服务端仍会正常跑完并出现在后台记录里。
+
+因此 **404 / 429 都必须当作瞬时错误重试**，绝不能当作任务失败直接退出，否则会丢弃一个实际已成功的任务（且已计费）。适配器的做法：双端点回退 + 3 分钟宽限期 + 放弃时打印 `task_id` / `video_id`。
+
+### 结果找回
+
+任务丢失时用 `task_id` 找回：
+
+```bash
+# 1) 用 task_id 换 video_id
+curl -H "Authorization: Bearer $AGNES_API_KEY" https://api.agnes-ai.cn/v1/videos/<TASK_ID>
+
+# 2) 用 video_id 取 url
+curl -H "Authorization: Bearer $AGNES_API_KEY" "https://api.agnes-ai.cn/agnesapi?video_id=<VIDEO_ID>"
+```
+
+或直接调用 MCP 工具 `agnes_video_generateVideo` 并传入 `task_id`，跳过创建直接取回结果。
+
 ### 重要说明
 
 - 视频生成是异步任务，需先创建任务再轮询结果
 - 创建任务响应返回 `video_id`（推荐）和 `task_id`
-- 最终视频 URL 位于响应 `metadata.url`
+- 最终视频 URL 位于 `agnesapi` 响应的顶层 `url` 字段
+- `seconds` 是**字符串**（如 `"5.0"`），不是数字；`frame_rate` 在 `request_params` 内，顶层没有
+- `video_id` 是 base64 编码的 LiteLLM 路由令牌，其中的 `model_id` 在任务完成后会被重写为空值，属正常现象
 - `num_frames` 必须遵循 `8n + 1` 规则且 `≤ 441`

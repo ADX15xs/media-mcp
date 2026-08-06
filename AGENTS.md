@@ -50,7 +50,10 @@ images-generations/                ← 各供应商 API 文档参考（Agnes.md 
 - **认证方式**: `config.yml` 中 `auth_method` 支持 `bearer`（默认）、`basic`、`custom_header`
 - **环境变量展开**: 配置值中的 `${VAR}` 在启动时展开；缺失变量保留原值，运行时报错
 - **供应商注册**: 适配器通过 `init()` 自注册到 `registry` 包；`main.go` 调用 `supplier.BuildAll(cfg)` 统一构建，未注册的供应商名自动 fallback 到 `HTTPGenericAdapter` / `HTTPGenericVideoAdapter`
-- **视频生成**: 异步模式，提交 task_id 后每 5s 轮询，最长等 10 分钟
+- **视频生成**: 异步模式。提交后先等 15s，再自适应轮询（5–30s），总超时 15 分钟
+- **视频轮询容错**: Agnes 状态接口会间歇性返回 404 / 429，但任务在服务端仍会跑完。所有 HTTP 失败一律视为**瞬时错误**，在双端点间回退重试；只有全部端点在 3 分钟宽限期内持续失败才放弃任务，且放弃时必定打印 `task_id` / `video_id` 与找回命令
+- **视频任务重连**: `*_generateVideo` 支持可选的 `task_id` / `video_id` 参数，跳过创建直接挂到已有任务上取回结果，不重复计费
+- **调试日志**: `MEDIA_MCP_DEBUG=1` 将完整请求/响应体输出到 stderr
 - **错误处理**: 标准 Go error，日志到 stderr，JSON-RPC 响应到 stdout
 - **测试**: 各包目录下的 `_test.go` 文件，遵循标准 Go 测试约定
 

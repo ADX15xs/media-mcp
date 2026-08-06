@@ -167,6 +167,14 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 						"type":        "number",
 						"description": "Optional: reproducibility seed",
 					},
+					"task_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional: re-attach to an existing task instead of creating a new one. Use the task_id reported by a previous failed call to recover its output without paying for a regeneration.",
+					},
+					"video_id": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional: re-attach using a known video_id (alternative to task_id)",
+					},
 				},
 				"required": []string{"prompt"},
 			},
@@ -221,6 +229,14 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 				if n, ok := seed.(float64); ok {
 					seedInt := int(n)
 					videoReq.Seed = &seedInt
+				}
+			}
+			for _, k := range []string{"task_id", "video_id"} {
+				if v := getString(req.Arguments, k); v != "" {
+					if videoReq.Extra == nil {
+						videoReq.Extra = map[string]interface{}{}
+					}
+					videoReq.Extra[k] = v
 				}
 			}
 			result := sup.GenVideo(videoReq)

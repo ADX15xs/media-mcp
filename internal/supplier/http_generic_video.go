@@ -217,6 +217,8 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 
 	startTime := time.Now()
 	lastStatus := ""
+	var firstFailureAt time.Time
+	const transientGrace = 3 * time.Minute
 
 	for {
 		elapsed := time.Since(startTime)
@@ -247,12 +249,23 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 			continue
 		}
 
+		// Status endpoints are routinely flaky (rate limits, eventual
+		// consistency) while the task itself keeps running. Retry instead of
+		// discarding a task the backend may still complete.
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			if resp.StatusCode == 404 {
-				return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("task %s not found", taskID)}
+			if firstFailureAt.IsZero() {
+				firstFailureAt = time.Now()
 			}
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("poll HTTP %d: %s", resp.StatusCode, truncate(string(body), 100))}
+			if stuck := time.Since(firstFailureAt); stuck >= transientGrace {
+				return &VideoResult{Request: req, ModelUsed: modelUsed,
+					Error: fmt.Errorf("poll failing for %v, last HTTP %d: %s [task_id=%s]",
+						transientGrace, resp.StatusCode, truncate(string(body), 100), taskID)}
+			}
+			logf("video poll [%s] transient HTTP %d, retrying", taskID, resp.StatusCode)
+			time.Sleep(h.pollInterval)
+			continue
 		}
+		firstFailureAt = time.Time{}
 
 		statusResp := make(map[string]interface{})
 		if err := json.Unmarshal(body, &statusResp); err != nil {
