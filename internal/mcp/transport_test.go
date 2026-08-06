@@ -53,6 +53,18 @@ func (m *mockVideoSupplier) GenVideo(req supplier.VideoRequest) *supplier.VideoR
 	}
 }
 
+type mockVideoStatusSupplier struct {
+	mockVideoSupplier
+	getResult func(taskID, videoID string) *supplier.VideoResult
+}
+
+func (m *mockVideoStatusSupplier) GetVideoResult(taskID, videoID string) *supplier.VideoResult {
+	if m.getResult != nil {
+		return m.getResult(taskID, videoID)
+	}
+	return &supplier.VideoResult{Status: "working", TaskID: taskID, ModelUsed: "mock", Request: supplier.VideoRequest{Supplier: m.name}}
+}
+
 type mockExtImageSupplier struct {
 	mockImageSupplier
 	extraSchema map[string]interface{}
@@ -494,6 +506,130 @@ func TestToolsCall_video(t *testing.T) {
 	}
 	if linkItem["name"] != "video.mp4" {
 		t.Errorf("content[1].name = %v, want video.mp4", linkItem["name"])
+	}
+}
+
+func TestToolsList_videoStatusProvider(t *testing.T) {
+	vidSup := &mockVideoStatusSupplier{mockVideoSupplier: mockVideoSupplier{name: "asyncVid"}}
+	h := newMCPTestHarness(t, nil, []supplier.VideoSupplier{vidSup})
+	defer h.close()
+
+	h.sendRequest("initialize", 1, nil)
+	h.readResponse()
+	h.readResponse()
+
+	h.sendRequest("tools/list", 2, nil)
+	resp := h.readResponse()
+	result, _ := resp["result"].(map[string]interface{})
+	tools, _ := result["tools"].([]interface{})
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools (generateVideo + getVideoResult), got %d", len(tools))
+	}
+	names := map[string]bool{}
+	for _, tc := range tools {
+		names[tc.(map[string]interface{})["name"].(string)] = true
+	}
+	if !names["asyncVid_generateVideo"] || !names["asyncVid_getVideoResult"] {
+		t.Errorf("tool names = %v", names)
+	}
+}
+
+func TestToolsCall_unknownArgs(t *testing.T) {
+	imgSup := &mockImageSupplier{
+		name: "mock",
+		genImage: func(req supplier.ImageRequest) *supplier.ImageResult {
+			return &supplier.ImageResult{URLs: []string{"https://example.com/img.png"}, ModelUsed: "mock", Request: req}
+		},
+	}
+	h := newMCPTestHarness(t, []supplier.ImageSupplier{imgSup}, nil)
+	defer h.close()
+
+	h.sendRequest("initialize", 1, nil)
+	h.readResponse()
+	h.readResponse()
+
+	h.sendRequest("tools/call", 15, map[string]interface{}{
+		"name": "mock_generateImage",
+		"arguments": map[string]interface{}{
+			"prompt": "a cat",
+			"ratio":  "16:9", // not declared by this supplier
+		},
+	})
+	resp := h.readResponse()
+	if resp["error"] != nil {
+		t.Fatalf("tools/call error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]interface{})
+	content, _ := result["content"].([]interface{})
+	textItem := content[0].(map[string]interface{})
+	text := textItem["text"].(string)
+	if !strings.Contains(text, "unexpected argument(s) ignored: ratio") {
+		t.Errorf("text should flag the dropped argument, got: %s", text)
+	}
+}
+
+func TestToolsList_getVideoResultSchema(t *testing.T) {
+	vidSup := &mockVideoStatusSupplier{mockVideoSupplier: mockVideoSupplier{name: "asyncVid"}}
+	h := newMCPTestHarness(t, nil, []supplier.VideoSupplier{vidSup})
+	defer h.close()
+
+	h.sendRequest("initialize", 1, nil)
+	h.readResponse()
+	h.readResponse()
+
+	h.sendRequest("tools/list", 2, nil)
+	resp := h.readResponse()
+	result, _ := resp["result"].(map[string]interface{})
+	tools, _ := result["tools"].([]interface{})
+	var schema map[string]interface{}
+	for _, tc := range tools {
+		tool := tc.(map[string]interface{})
+		if tool["name"] == "asyncVid_getVideoResult" {
+			schema, _ = tool["inputSchema"].(map[string]interface{})
+		}
+	}
+	if schema == nil {
+		t.Fatal("missing getVideoResult inputSchema")
+	}
+	anyOf, _ := schema["anyOf"].([]interface{})
+	if len(anyOf) != 2 {
+		t.Fatalf("anyOf = %v, want 2 alternatives (task_id or video_id)", anyOf)
+	}
+}
+
+func TestToolsCall_getVideoResult(t *testing.T) {
+	vidSup := &mockVideoStatusSupplier{
+		mockVideoSupplier: mockVideoSupplier{name: "asyncVid"},
+		getResult: func(taskID, videoID string) *supplier.VideoResult {
+			return &supplier.VideoResult{Status: "working", TaskID: taskID, ModelUsed: "mock", Request: supplier.VideoRequest{Supplier: "asyncVid"}}
+		},
+	}
+	h := newMCPTestHarness(t, nil, []supplier.VideoSupplier{vidSup})
+	defer h.close()
+
+	h.sendRequest("initialize", 1, nil)
+	h.readResponse()
+	h.readResponse()
+
+	h.sendRequest("tools/call", 6, map[string]interface{}{
+		"name": "asyncVid_getVideoResult",
+		"arguments": map[string]interface{}{
+			"task_id": "task_abc",
+		},
+	})
+	resp := h.readResponse()
+	if resp["error"] != nil {
+		t.Fatalf("tools/call error: %v", resp["error"])
+	}
+	result, _ := resp["result"].(map[string]interface{})
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Error("isError should be false for working status")
+	}
+	content, _ := result["content"].([]interface{})
+	textItem := content[0].(map[string]interface{})
+	text := textItem["text"].(string)
+	if !strings.Contains(text, "in progress") || !strings.Contains(text, "task_abc") || !strings.Contains(text, "asyncVid_getVideoResult") {
+		t.Errorf("text should mention in-progress + task_id + poll tool, got: %s", text)
 	}
 }
 

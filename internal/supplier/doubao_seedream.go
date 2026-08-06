@@ -7,7 +7,7 @@ import (
 	"io"
 	"media-mcp/internal/config"
 	"net/http"
-	"time"
+	"strings"
 )
 
 // DoubaoSeedreamAdapter implements ImageSupplier for Volcengine's Doubao Seedream API.
@@ -80,6 +80,34 @@ func NewDoubaoSeedreamAdapter(name string, cfg *config.SupplierConfig) *DoubaoSe
 
 func (d *DoubaoSeedreamAdapter) Name() string {
 	return d.ToolName
+}
+
+// Capabilities explains the size semantics: both a resolution tier and an
+// explicit WxH pixel value are supported, but must not be mixed. The tiers
+// depend on the model (per the Volcengine docs); the configured model is
+// resolved to its exact tiers when known.
+func (d *DoubaoSeedreamAdapter) Capabilities() string {
+	tiers := sizeTiersFor(d.Model)
+	if tiers == "" {
+		return "Size accepts a resolution tier (valid tiers depend on the model, see the Volcengine docs) or an explicit WxH pixel value; both are supported, do not mix them."
+	}
+	return "Size accepts a resolution tier (" + tiers + ") or an explicit WxH pixel value; both are supported, do not mix them."
+}
+
+// sizeTiersFor lists the resolution tiers of a Seedream model name per the
+// Volcengine docs; "" means the name is unknown and the caller falls back.
+func sizeTiersFor(model string) string {
+	switch {
+	case strings.Contains(model, "5.0-pro"), strings.Contains(model, "5.0 pro"):
+		return "1K/1.5K/2K for 5.0 pro"
+	case strings.Contains(model, "5.0-lite"), strings.Contains(model, "5.0 lite"):
+		return "2K/3K/4K for 5.0 lite"
+	case strings.Contains(model, "4.5"):
+		return "2K/4K for 4.5"
+	case strings.Contains(model, "4.0"):
+		return "1K/2K/4K for 4.0"
+	}
+	return ""
 }
 
 func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {
@@ -155,7 +183,7 @@ func (d *DoubaoSeedreamAdapter) GenImage(req ImageRequest) *ImageResult {
 		return &ImageResult{Request: req, Error: fmt.Errorf("marshal request: %w", err)}
 	}
 
-	client := &http.Client{Timeout: 360 * time.Second}
+	client := &http.Client{Timeout: imageHTTPTimeout}
 	url := d.BaseURL
 	if len(url) > 0 && url[len(url)-1] == '/' {
 		url = url[:len(url)-1]
@@ -242,7 +270,8 @@ func (d *DoubaoSeedreamAdapter) ExtraInputSchema() map[string]interface{} {
 		},
 		"optimize_mode": map[string]interface{}{
 			"type":        "string",
-			"description": "Optional: prompt optimization mode (only for 5.0 pro / 4.0)",
+			"description": "Optional: prompt optimization mode. standard (default, all models) or fast (not supported by 5.0 lite / 4.5)",
+			"enum":        []string{"standard", "fast"},
 		},
 		"web_search": map[string]interface{}{
 			"type":        "boolean",

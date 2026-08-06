@@ -84,11 +84,6 @@ func (a *AgnesAIAdapter) ExtraInputSchema() map[string]interface{} {
 			"type":        "string",
 			"description": "Optional: reference image (URL or base64 data URI) for image-to-image",
 		},
-		"response_format": map[string]interface{}{
-			"type":        "string",
-			"description": "Optional: output format",
-			"enum":        []string{"url", "b64_json"},
-		},
 		"return_base64": map[string]interface{}{
 			"type":        "boolean",
 			"description": "Optional: return base64-encoded image data instead of a URL",
@@ -122,7 +117,7 @@ func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {
 
 	// Determine output format
 	responseFormat := "url"
-	if req.Extra["return_base64"] == true || req.Extra["response_format"] == "b64_json" {
+	if req.Extra["return_base64"] == true {
 		responseFormat = "b64_json"
 	}
 
@@ -146,7 +141,7 @@ func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {
 	// Add request-level extras that belong in extra_body
 	for k, v := range req.Extra {
 		switch k {
-		case "image", "ratio", "return_base64", "response_format":
+		case "image", "ratio", "return_base64":
 			// already handled above or will be in extra_body below
 		default:
 			extraBody[k] = v
@@ -160,7 +155,7 @@ func (a *AgnesAIAdapter) GenImage(req ImageRequest) *ImageResult {
 		return &ImageResult{Request: req, Error: fmt.Errorf("marshal request: %w", err)}
 	}
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := &http.Client{Timeout: imageHTTPTimeout}
 	url := a.BaseURL
 	if len(url) > 0 && url[len(url)-1] == '/' {
 		url = url[:len(url)-1]

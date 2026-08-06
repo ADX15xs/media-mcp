@@ -10,6 +10,7 @@ import (
 	"media-mcp/internal/config"
 	"media-mcp/internal/supplier"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -132,13 +133,18 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 	}
 
 	for _, sup := range s.videoSuppliers {
-		name := fmt.Sprintf("%s_generateVideo", sup.Name())
-		desc := fmt.Sprintf("Generate a video using the %s supplier", sup.Name())
+		name := sup.Name()
+		_, hasStatus := sup.(supplier.VideoStatusProvider)
+
+		desc := fmt.Sprintf("Generate a video using the %s supplier", name)
 		if c, ok := sup.(supplier.CapabilityProvider); ok {
 			desc += ". " + c.Capabilities()
 		}
+		if hasStatus {
+			desc += fmt.Sprintf(". Submits asynchronously and returns a task_id; poll the result with %s_getVideoResult until status is completed", name)
+		}
 		tools = append(tools, map[string]interface{}{
-			"name":        name,
+			"name":        fmt.Sprintf("%s_generateVideo", name),
 			"description": desc,
 			"inputSchema": map[string]interface{}{
 				"type": "object",
@@ -177,6 +183,30 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 				"required": []string{"prompt"},
 			},
 		})
+
+		if hasStatus {
+			tools = append(tools, map[string]interface{}{
+				"name":        fmt.Sprintf("%s_getVideoResult", name),
+				"description": fmt.Sprintf("Poll the result of an asynchronous %s video task using the task_id or video_id returned by generateVideo (at least one required). Call repeatedly until it returns the completed video URL or a failed status; returns 'working' if still in progress.", name),
+				"inputSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"task_id": map[string]interface{}{
+							"type":        "string",
+							"description": "task_id returned by generateVideo",
+						},
+						"video_id": map[string]interface{}{
+							"type":        "string",
+							"description": "video_id returned by generateVideo (alternative to task_id)",
+						},
+					},
+					"anyOf": []map[string]interface{}{
+						{"required": []string{"task_id"}},
+						{"required": []string{"video_id"}},
+					},
+				},
+			})
+		}
 	}
 
 	s.sendResult(msg.ID, map[string]interface{}{
@@ -207,6 +237,7 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 			Supplier: sup.Name(),
 		}
 		imageReq.Extra = forwardDeclaredArgs(sup, req.Arguments, imageBaseArgs)
+		imageReq.UnknownArgs = unknownArgs(sup, req.Arguments, imageBaseArgs)
 			result := sup.GenImage(imageReq)
 			s.sendImageResult(msg.ID, result)
 			return
@@ -232,7 +263,19 @@ func (s *Server) handleToolCall(msg jsonMessage) {
 				}
 			}
 			videoReq.Extra = forwardDeclaredArgs(sup, req.Arguments, videoBaseArgs)
+			videoReq.UnknownArgs = unknownArgs(sup, req.Arguments, videoBaseArgs)
 			result := sup.GenVideo(videoReq)
+			s.sendVideoResult(msg.ID, result)
+			return
+		}
+
+		if req.Name == sup.Name()+"_getVideoResult" {
+			sp, ok := sup.(supplier.VideoStatusProvider)
+			if !ok {
+				s.sendError(msg.ID, -32601, "Method not found: "+req.Name)
+				return
+			}
+			result := sp.GetVideoResult(getString(req.Arguments, "task_id"), getString(req.Arguments, "video_id"))
 			s.sendVideoResult(msg.ID, result)
 			return
 		}
@@ -290,14 +333,46 @@ func containsStr(ss []string, s string) bool {
 	return false
 }
 
+// unknownArgs returns argument keys that are neither base fields nor
+// SchemaExtender-declared fields; they are dropped but echoed in the result
+// so callers notice parameters that never reached the adapter.
+func unknownArgs(sup interface{}, args map[string]interface{}, baseArgs []string) []string {
+	var unknown []string
+	for k := range args {
+		if containsStr(baseArgs, k) {
+			continue
+		}
+		if ext, ok := sup.(supplier.SchemaExtender); ok {
+			if _, declared := ext.ExtraInputSchema()[k]; declared {
+				continue
+			}
+		}
+		unknown = append(unknown, k)
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
+func unknownArgsNote(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Note: unexpected argument(s) ignored: %s (only documented parameters are accepted)", strings.Join(names, ", "))
+}
+
 func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 	var content []map[string]interface{}
+	note := unknownArgsNote(result.Request.UnknownArgs)
 	if result.Error != nil {
+		text := fmt.Sprintf("Error generating image for %s: %v\nURLs: %v\nBase64 count: %d",
+			result.Request.Supplier, result.Error, result.URLs, len(result.Base64))
+		if note != "" {
+			text += "\n" + note
+		}
 		content = []map[string]interface{}{
 			{
 				"type": "text",
-				"text": fmt.Sprintf("Error generating image for %s: %v\nURLs: %v\nBase64 count: %d",
-					result.Request.Supplier, result.Error, result.URLs, len(result.Base64)),
+				"text": text,
 			},
 		}
 	} else {
@@ -311,6 +386,9 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 			textParts = append(textParts, "No images generated.")
 		}
 		textParts = append(textParts, fmt.Sprintf("Model used: %s", result.ModelUsed))
+		if note != "" {
+			textParts = append(textParts, note)
+		}
 
 		content = []map[string]interface{}{
 			{
@@ -348,15 +426,45 @@ func (s *Server) sendImageResult(id *jsonNumber, result *supplier.ImageResult) {
 
 func (s *Server) sendVideoResult(id *jsonNumber, result *supplier.VideoResult) {
 	var content []map[string]interface{}
-	if result.Error != nil {
+	note := unknownArgsNote(result.Request.UnknownArgs)
+	switch {
+	case result.Error != nil:
+		text := fmt.Sprintf("Error generating video for %s: %v",
+			result.Request.Supplier, result.Error)
+		if note != "" {
+			text += "\n" + note
+		}
 		content = []map[string]interface{}{
 			{
 				"type": "text",
-				"text": fmt.Sprintf("Error generating video for %s: %v",
-					result.Request.Supplier, result.Error),
+				"text": text,
 			},
 		}
-	} else {
+
+	case result.Status == "working":
+		var lines []string
+		lines = append(lines, "Video generation in progress.")
+		if result.TaskID != "" {
+			lines = append(lines, "  task_id: "+result.TaskID)
+		}
+		if result.VideoID != "" {
+			lines = append(lines, "  video_id: "+result.VideoID)
+		}
+		if result.ModelUsed != "" {
+			lines = append(lines, "Model used: "+result.ModelUsed)
+		}
+		lines = append(lines, fmt.Sprintf("Poll with %s_getVideoResult until it returns a completed URL or a failed status.", result.Request.Supplier))
+		if note != "" {
+			lines = append(lines, note)
+		}
+		content = []map[string]interface{}{
+			{
+				"type": "text",
+				"text": joinStrings(lines, "\n"),
+			},
+		}
+
+	default:
 		textParts := []string{}
 		if len(result.URLs) > 0 {
 			textParts = append(textParts, fmt.Sprintf("Generated videos (%d total):", len(result.URLs)))
@@ -372,6 +480,9 @@ func (s *Server) sendVideoResult(id *jsonNumber, result *supplier.VideoResult) {
 		}
 		if result.FrameRate > 0 {
 			textParts = append(textParts, fmt.Sprintf("Frame rate: %.1f fps", result.FrameRate))
+		}
+		if note != "" {
+			textParts = append(textParts, note)
 		}
 
 		content = []map[string]interface{}{
