@@ -32,25 +32,16 @@ type AgnesVideoAdapter struct {
 // pollTiming groups the polling schedule so it can be tuned per deployment and
 // compressed in tests.
 type pollTiming struct {
-	initialWait  time.Duration
-	base         time.Duration
-	min          time.Duration
-	max          time.Duration
-	totalTimeout time.Duration
-	// grace is how long every status endpoint may keep failing before the task
-	// is abandoned. It must comfortably exceed a typical generation so that a
-	// transient 404/429 storm can never discard a task that is still running.
-	grace time.Duration
+	base time.Duration
+	min  time.Duration
+	max  time.Duration
 }
 
 func defaultPollTiming() pollTiming {
 	return pollTiming{
-		initialWait:  15 * time.Second,
-		base:         8 * time.Second,
-		min:          5 * time.Second,
-		max:          30 * time.Second,
-		totalTimeout: 15 * time.Minute,
-		grace:        3 * time.Minute,
+		base: 8 * time.Second,
+		min:  5 * time.Second,
+		max:  30 * time.Second,
 	}
 }
 
@@ -74,14 +65,8 @@ func NewAgnesVideoAdapter(cfg *config.SupplierConfig) *AgnesVideoAdapter {
 	}
 
 	timing := defaultPollTiming()
-	if v := intFromExtra(cfg.Extra["initial_wait_seconds"]); v > 0 {
-		timing.initialWait = time.Duration(v) * time.Second
-	}
 	if v := intFromExtra(cfg.Extra["poll_interval_seconds"]); v > 0 {
 		timing.base = time.Duration(v) * time.Second
-	}
-	if v := intFromExtra(cfg.Extra["max_timeout_seconds"]); v > 0 {
-		timing.totalTimeout = time.Duration(v) * time.Second
 	}
 
 	return &AgnesVideoAdapter{
@@ -103,22 +88,15 @@ func (a *AgnesVideoAdapter) Name() string {
 	return "agnes_video"
 }
 
-func (a *AgnesVideoAdapter) ExtraInputSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"task_id": map[string]interface{}{
-			"type":        "string",
-			"description": "Optional: re-attach to an existing task instead of creating a new one. Use the task_id reported by a previous failed call to recover its output without paying for a regeneration.",
-		},
-		"video_id": map[string]interface{}{
-			"type":        "string",
-			"description": "Optional: re-attach using a known video_id (alternative to task_id)",
-		},
-	}
+// Capabilities exposes the constraints agents must respect before submitting:
+// creation is rate-limited to 1 req/min, duration is capped at ~18s, output
+// pixels are 32-aligned, and video_id is the preferred polling key.
+func (a *AgnesVideoAdapter) Capabilities() string {
+	return "Rate limit: creation is limited to 1 request per minute; submit tasks sequentially with >= 60s between calls. " +
+		"Duration is capped at ~18s (num_frames <= 441 at 24fps); longer durations are clamped. " +
+		"Output dimensions are 32-aligned; the exact size is not guaranteed. " +
+		"Tasks are keyed by video_id; prefer passing video_id when polling."
 }
-
-// resumeKeys are consumed by the adapter itself and must never be forwarded
-// into the creation payload.
-var resumeKeys = []string{"task_id", "video_id"}
 
 // videoSizeTable maps aspect_ratio × resolution to backend width/height.
 // Agnes keeps the ratio but re-aligns pixels to multiples of 32 (probed
@@ -131,34 +109,21 @@ var videoSizeTable = SizeTable{
 	"3:4":  {"480p": {480, 640}, "720p": {720, 960}, "1080p": {1080, 1440}},
 }
 
-// GenVideo calls the Agnes AI video generation API and returns the result.
-// When req.Extra carries a task_id (and optionally a video_id) it skips
-// creation and re-attaches to that existing task instead.
+// GenVideo submits an Agnes AI video generation task and returns immediately
+// with a working result carrying the task handle. Poll completion with
+// GetVideoResult (exposed as the _getVideoResult tool); the task is never
+// re-created.
 func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 	modelUsed := defaultStr(req.Model, a.Model)
 
-	if taskID, _ := req.Extra["task_id"].(string); taskID != "" {
-		videoID, _ := req.Extra["video_id"].(string)
-		logf("video resume: re-attaching to existing task_id=%s video_id=%s", taskID, orNone(videoID))
-		return a.pollTask(taskID, videoID, modelUsed, req)
-	}
-	if videoID, _ := req.Extra["video_id"].(string); videoID != "" {
-		logf("video resume: re-attaching to existing video_id=%s", videoID)
-		return a.pollTask("", videoID, modelUsed, req)
-	}
-
 	numFrames := a.NumFrames
-
-	// VideoRequest.Duration is a vendor-agnostic seconds value; Agnes controls
-	// length via num_frames (must be 8n+1, <=441), so convert here instead of
-	// sending a duration field the API ignores.
+	// Agnes controls length via num_frames (must be 8n+1, <=441), not duration.
 	if req.Duration > 0 {
 		numFrames = fracToNumFrames(req.Duration, a.FrameRate)
 	}
 
 	// Per-request size override; keep in locals, never touch the shared
-	// Width/Height (tools/call runs concurrently). 16:9/720p defaults apply
-	// only when at least one size field is provided.
+	// Width/Height (tools/call runs concurrently).
 	width, height := a.Width, a.Height
 	if req.AspectRatio != "" || req.Resolution != "" {
 		ar := defaultStr(req.AspectRatio, "16:9")
@@ -190,12 +155,6 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 		if _, exists := payload[k]; !exists {
 			payload[k] = v
 		}
-	}
-	for k, v := range req.Extra {
-		payload[k] = v
-	}
-	for _, k := range resumeKeys {
-		delete(payload, k)
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -261,11 +220,14 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 		return &VideoResult{Request: req, Error: fmt.Errorf("no task_id/video_id in response: %s", truncate(string(body), 200))}
 	}
 
-	// Logged unconditionally: this is the only handle that can recover the
-	// output if polling later goes wrong.
 	logf("video submitted: task_id=%s video_id=%s", orNone(taskID), orNone(videoID))
-
-	return a.pollTask(taskID, videoID, modelUsed, req)
+	return &VideoResult{
+		Request:   req,
+		ModelUsed: modelUsed,
+		Status:    "working",
+		TaskID:    taskID,
+		VideoID:   videoID,
+	}
 }
 
 // agnesStatus is the normalized view of both Agnes status endpoints, which
@@ -331,53 +293,36 @@ type pollEndpoint struct {
 	carriesURL bool
 }
 
-// pollTask waits for an Agnes video task to finish.
-//
-// Both Agnes status endpoints are flaky under load: the status API is
-// aggressively rate-limited (observed 429 on ~30% of requests at 4 concurrent
-// pollers) and has been seen to answer 404 "task not found" for a task that
-// the backend goes on to complete. Every HTTP failure is therefore treated as
-// transient and retried against the alternate endpoint; the task is only
-// abandoned after the whole grace window elapses with no usable response.
-func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req VideoRequest) *VideoResult {
+// pollTask probes the Agnes status endpoints until the task reaches a terminal
+// state or cap elapses. On cap it returns a working result (no error) so the
+// caller retries with another getVideoResult call. Both status endpoints are
+// flaky under load (404/429 for tasks that later complete); every HTTP failure
+// is treated as transient and retried within the cap.
+func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req VideoRequest, cap time.Duration) *VideoResult {
 	host := strings.TrimSuffix(strings.TrimSuffix(a.BaseURL, "/"), "/v1/videos")
 	host = strings.TrimSuffix(host, "/")
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	tm := a.timing
 
-	time.Sleep(tm.initialWait)
-
-	startTime := time.Now()
+	deadline := time.Now().Add(cap)
 	interval := tm.base
 	lastStatus := ""
 	lastProgress := 0.0
 	lastProgressAt := time.Now()
-	var firstFailureAt time.Time
 
 	for {
-		if elapsed := time.Since(startTime); elapsed >= tm.totalTimeout {
-			return a.abandon(req, modelUsed, taskID, videoID,
-				fmt.Errorf("timeout after %v (last status: %s)", tm.totalTimeout, orNone(lastStatus)))
+		if time.Now().After(deadline) {
+			return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "working", TaskID: taskID, VideoID: videoID}
 		}
 
 		st, ok, failure := a.probe(client, host, taskID, videoID)
 		if !ok {
-			if firstFailureAt.IsZero() {
-				firstFailureAt = time.Now()
-			}
-			stuck := time.Since(firstFailureAt)
-			if stuck >= tm.grace {
-				return a.abandon(req, modelUsed, taskID, videoID,
-					fmt.Errorf("status endpoints unreachable for %v (last failure: %s)", tm.grace, failure))
-			}
-			interval = growInterval(interval, tm.max)
-			logf("video poll transient failure (%s), retrying in %v [%v/%v of grace window]",
-				failure, interval, stuck.Truncate(time.Second), tm.grace)
+			logf("video poll transient failure (%s), retrying in %v", failure, interval)
 			time.Sleep(interval)
+			interval = growInterval(interval, tm.max)
 			continue
 		}
-		firstFailureAt = time.Time{}
 
 		// /v1/videos/<task_id> reveals the video_id even when creation did not.
 		if videoID == "" && st.VideoID != "" {
@@ -390,9 +335,7 @@ func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req Vide
 			logf("video status [%s]: %s (progress: %.0f%%)", orNone(taskID), orNone(st.Status), st.Progress)
 		}
 
-		// Adapt the polling interval to progress velocity: without a time-based
-		// ETA, a fast-moving progress means we should poll sooner, a stalled one
-		// means we should back off to avoid hammering the API.
+		// Adapt the polling interval to progress velocity.
 		if st.Progress > lastProgress {
 			velocity := (st.Progress - lastProgress) / time.Since(lastProgressAt).Seconds()
 			switch {
@@ -414,26 +357,37 @@ func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req Vide
 				videoURL = a.resolveURL(client, host, videoID)
 			}
 			if videoURL == "" {
-				return a.abandon(req, modelUsed, taskID, videoID,
-					fmt.Errorf("task completed but no video URL could be resolved"))
+				return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "failed", TaskID: taskID, VideoID: videoID,
+					Error: fmt.Errorf("task completed but no video URL could be resolved")}
 			}
 			logf("video completed [%s]: %s", orNone(taskID), videoURL)
 			return &VideoResult{
 				Request:   req,
 				ModelUsed: modelUsed,
+				Status:    "completed",
 				URLs:      []string{videoURL},
 				FrameRate: st.FrameRate,
 				Duration:  int(st.Seconds + 0.5),
 			}
 
 		case "failed", "error", "failure", "cancelled", "canceled":
-			return &VideoResult{Request: req, ModelUsed: modelUsed,
+			return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "failed", TaskID: taskID, VideoID: videoID,
 				Error: fmt.Errorf("video generation failed: %s (task_id=%s)", defaultStr(st.ErrMsg, "unknown error"), orNone(taskID))}
 
 		default:
 			time.Sleep(interval)
 		}
 	}
+}
+
+// GetVideoResult polls an existing Agnes video task for up to statusPollCap.
+// task_id and/or video_id must be supplied; the task is never re-created.
+func (a *AgnesVideoAdapter) GetVideoResult(taskID, videoID string) *VideoResult {
+	if taskID == "" && videoID == "" {
+		return &VideoResult{Error: fmt.Errorf("task_id or video_id required")}
+	}
+	req := VideoRequest{Supplier: a.Name()}
+	return a.pollTask(taskID, videoID, a.Model, req, statusPollCap)
 }
 
 // probe queries the status endpoints in order of usefulness and returns the
@@ -533,29 +487,6 @@ func (a *AgnesVideoAdapter) get(client *http.Client, target string) ([]byte, int
 		return nil, resp.StatusCode, err
 	}
 	return body, resp.StatusCode, nil
-}
-
-// abandon reports a terminal polling failure with everything needed to recover
-// the output out-of-band, since the backend task usually did succeed.
-func (a *AgnesVideoAdapter) abandon(req VideoRequest, modelUsed, taskID, videoID string, cause error) *VideoResult {
-	logf("VIDEO TASK ABANDONED — the task may still be running or already finished on Agnes.")
-	logf("  task_id  = %s", orNone(taskID))
-	logf("  video_id = %s", orNone(videoID))
-	logf("  cause    = %v", cause)
-	if videoID != "" {
-		logf("  recover  : curl -H \"Authorization: Bearer $AGNES_AI_API_KEY\" \"https://api.agnes-ai.cn/agnesapi?video_id=%s\"", videoID)
-	}
-	if taskID != "" {
-		logf("  or re-attach: call agnes_video_generateVideo again with task_id=%s", taskID)
-	}
-
-	return &VideoResult{
-		Request:   req,
-		ModelUsed: modelUsed,
-		Error: fmt.Errorf("%w [task_id=%s video_id=%s] — the task may have completed on Agnes; "+
-			"re-attach by calling this tool again with task_id set to recover the output",
-			cause, orNone(taskID), orNone(videoID)),
-	}
 }
 
 func growInterval(cur, max time.Duration) time.Duration {

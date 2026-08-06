@@ -73,7 +73,7 @@ func (s *SenseNovaAdapter) GenImage(req ImageRequest) *ImageResult {
 		return &ImageResult{Request: req, Error: fmt.Errorf("marshal request: %w", err)}
 	}
 
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := &http.Client{Timeout: imageHTTPTimeout}
 	url := s.BaseURL
 	if len(url) > 0 && url[len(url)-1] == '/' {
 		url = url[:len(url)-1]

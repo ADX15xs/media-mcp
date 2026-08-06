@@ -20,12 +20,9 @@ func newTestAgnesVideo(baseURL string) *AgnesVideoAdapter {
 		Model:   "agnes-video-v2.0",
 	})
 	a.timing = pollTiming{
-		initialWait:  0,
-		base:         time.Millisecond,
-		min:          time.Millisecond,
-		max:          5 * time.Millisecond,
-		totalTimeout: 10 * time.Second,
-		grace:        200 * time.Millisecond,
+		base: time.Millisecond,
+		min:  time.Millisecond,
+		max:  5 * time.Millisecond,
 	}
 	return a
 }
@@ -124,7 +121,7 @@ func TestPollTask_transient404DoesNotAbandonTask(t *testing.T) {
 	defer srv.Close()
 
 	a := newTestAgnesVideo(srv.URL)
-	res := a.pollTask("task_1", "video_1", "agnes-video-v2.0", VideoRequest{Prompt: "x"})
+	res := a.pollTask("task_1", "video_1", "agnes-video-v2.0", VideoRequest{Prompt: "x"}, 5*time.Second)
 
 	if res.Error != nil {
 		t.Fatalf("pollTask() error = %v, want recovery after transient failures", res.Error)
@@ -156,7 +153,7 @@ func TestPollTask_fallsBackToTaskEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	a := newTestAgnesVideo(srv.URL)
-	res := a.pollTask("task_1", "", "agnes-video-v2.0", VideoRequest{Prompt: "x"})
+	res := a.pollTask("task_1", "", "agnes-video-v2.0", VideoRequest{Prompt: "x"}, 5*time.Second)
 
 	if res.Error != nil {
 		t.Fatalf("pollTask() error = %v", res.Error)
@@ -173,7 +170,7 @@ func TestPollTask_failedStatusIsTerminal(t *testing.T) {
 	defer srv.Close()
 
 	a := newTestAgnesVideo(srv.URL)
-	res := a.pollTask("task_1", "video_1", "agnes-video-v2.0", VideoRequest{Prompt: "x"})
+	res := a.pollTask("task_1", "video_1", "agnes-video-v2.0", VideoRequest{Prompt: "x"}, 5*time.Second)
 
 	if res.Error == nil {
 		t.Fatal("pollTask() error = nil, want terminal failure")
@@ -183,21 +180,8 @@ func TestPollTask_failedStatusIsTerminal(t *testing.T) {
 	}
 }
 
-// Every terminal error must carry the handles needed to recover the output.
-func TestAbandonIncludesRecoveryHandles(t *testing.T) {
-	a := newTestAgnesVideo("https://example.com")
-	res := a.abandon(VideoRequest{Prompt: "x"}, "m", "task_9", "video_9", fmt.Errorf("boom"))
-
-	msg := res.Error.Error()
-	for _, want := range []string{"task_9", "video_9", "re-attach"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q missing %q", msg, want)
-		}
-	}
-}
-
-// Re-attaching must not re-submit a generation.
-func TestGenVideo_resumeSkipsCreation(t *testing.T) {
+// GetVideoResult must never re-submit a generation; it only polls.
+func TestGetVideoResult_skipsCreation(t *testing.T) {
 	var posts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -208,16 +192,39 @@ func TestGenVideo_resumeSkipsCreation(t *testing.T) {
 	defer srv.Close()
 
 	a := newTestAgnesVideo(srv.URL)
-	res := a.GenVideo(VideoRequest{Prompt: "x", Extra: map[string]interface{}{"video_id": "video_1"}})
+	res := a.GetVideoResult("task_1", "video_1")
 
 	if res.Error != nil {
-		t.Fatalf("GenVideo() error = %v", res.Error)
+		t.Fatalf("GetVideoResult() error = %v", res.Error)
 	}
 	if posts != 0 {
-		t.Errorf("POST count = %d, want 0 (resume must not create a new task)", posts)
+		t.Errorf("POST count = %d, want 0 (GetVideoResult must not create a new task)", posts)
 	}
 	if len(res.URLs) != 1 || res.URLs[0] != "https://cdn.example.com/resumed.mp4" {
 		t.Errorf("URLs = %v", res.URLs)
+	}
+}
+
+// A task still in progress when the poll cap elapses returns working (no error),
+// so the caller retries instead of discarding a running task.
+func TestPollTask_capReturnsWorking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"in_progress","progress":10}`)
+	}))
+	defer srv.Close()
+
+	a := newTestAgnesVideo(srv.URL)
+	a.timing = pollTiming{base: time.Millisecond, min: time.Millisecond, max: 2 * time.Millisecond}
+	res := a.pollTask("task_1", "video_1", "m", VideoRequest{Prompt: "x"}, 50*time.Millisecond)
+
+	if res.Error != nil {
+		t.Fatalf("pollTask() error = %v, want working", res.Error)
+	}
+	if res.Status != "working" {
+		t.Errorf("Status = %q, want working", res.Status)
+	}
+	if res.TaskID != "task_1" {
+		t.Errorf("TaskID = %q", res.TaskID)
 	}
 }
 

@@ -77,7 +77,7 @@ func (h *HTTPGenericAdapter) GenImage(req ImageRequest) *ImageResult {
 		return &ImageResult{Request: req, Error: fmt.Errorf("marshal request: %w", err)}
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: imageHTTPTimeout}
 	url := h.BaseURL
 	if len(url) > 0 && url[len(url)-1] == '/' {
 		url = url[:len(url)-1]

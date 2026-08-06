@@ -1,13 +1,27 @@
 package supplier
 
+import "time"
+
+// imageHTTPTimeout caps a single synchronous image-generation HTTP call so it
+// fails with a clean, retriable error before the MCP client's request timeout
+// fires an opaque -32001. Image APIs are synchronous, so this is the best a
+// server-side adapter can do.
+const imageHTTPTimeout = 50 * time.Second
+
+// statusPollCap bounds a single getVideoResult call: it polls until the task
+// reaches a terminal state or the cap elapses, then returns "working" so the
+// caller retries. Each call stays well under any client request timeout.
+const statusPollCap = 20 * time.Second
+
 // ImageRequest holds a unified image generation request.
 type ImageRequest struct {
-	Supplier string                 // e.g. "senseNova"
-	Prompt   string                 // required
-	Model    string                 // supplier-specific model ID or name
-	Size     string                 // "2752x1536", etc.
-	N        int                    // number of images (default 1)
-	Extra    map[string]interface{} // supplier-specific params (declared via SchemaExtender)
+	Supplier    string                 // e.g. "senseNova"
+	Prompt      string                 // required
+	Model       string                 // supplier-specific model ID or name
+	Size        string                 // "2752x1536", etc.
+	N           int                    // number of images (default 1)
+	Extra       map[string]interface{} // supplier-specific params (declared via SchemaExtender)
+	UnknownArgs []string               // unrecognized arguments, dropped but echoed to the caller
 }
 
 // ImageResult is the unified result from an image generation call.
@@ -30,16 +44,25 @@ type VideoRequest struct {
 	AspectRatio string                 // optional, e.g. "9:16"; provider maps to width/height or ignores
 	Resolution  string                 // optional, e.g. "720p"; provider maps to width/height or ignores
 	Extra       map[string]interface{} // supplier-specific params (declared via SchemaExtender)
+	UnknownArgs []string               // unrecognized arguments, dropped but echoed to the caller
 }
 
 // VideoResult is the unified result from a video generation call.
 type VideoResult struct {
-	URLs       []string          // video URLs (usually one)
-	ModelUsed  string            // which model was used
-	FrameRate  float64           // fps of output
-	Duration   int               // actual duration in seconds
-	Request    VideoRequest      // echo of the request
-	Error      error             // non-nil if the call failed
+	URLs      []string
+	ModelUsed string
+	FrameRate float64
+	Duration  int
+	Request   VideoRequest
+	Error     error
+
+	// Status is "working", "completed", or "failed". Empty is treated as
+	// completed for backward compatibility with synchronous-style results.
+	Status string
+	// TaskID/VideoID identify an in-progress task returned by a non-blocking
+	// submit; the caller polls getVideoResult with them.
+	TaskID  string
+	VideoID string
 }
 
 // ImageSupplier is implemented by each vendor adapter.
@@ -66,4 +89,11 @@ type CapabilityProvider interface {
 // forwards matching call arguments to the supplier via req.Extra.
 type SchemaExtender interface {
 	ExtraInputSchema() map[string]interface{}
+}
+
+// VideoStatusProvider is an optional interface for video suppliers that submit
+// asynchronously. GenVideo returns a working result with a TaskID; the caller
+// polls GetVideoResult until the task reaches a terminal state.
+type VideoStatusProvider interface {
+	GetVideoResult(taskID, videoID string) *VideoResult
 }

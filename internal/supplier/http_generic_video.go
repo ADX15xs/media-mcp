@@ -7,7 +7,6 @@ import (
 	"io"
 	"media-mcp/internal/config"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -23,9 +22,7 @@ type HTTPGenericVideoAdapter struct {
 	Config        *config.SupplierConfig
 
 	// Polling configuration (from Extra or defaults).
-	initialWait     time.Duration
-	pollInterval    time.Duration
-	maxTotalTimeout time.Duration
+	pollInterval time.Duration
 
 	// Response field names (configurable via Extra for non-standard APIs).
 	taskIDField   string // JSON field name for task ID in creation response
@@ -44,9 +41,7 @@ func NewHTTPGenericVideoAdapter(name string, cfg *config.SupplierConfig) *HTTPGe
 		ExtraFields:   cfg.Extra,
 		Config:        cfg,
 
-		initialWait:     90 * time.Second,
-		pollInterval:    5 * time.Second,
-		maxTotalTimeout: 15 * time.Minute,
+		pollInterval: 5 * time.Second,
 
 		taskIDField:   "task_id",
 		statusField:   "status",
@@ -54,14 +49,8 @@ func NewHTTPGenericVideoAdapter(name string, cfg *config.SupplierConfig) *HTTPGe
 	}
 
 	// Override polling defaults from Extra.
-	if v, ok := cfg.Extra["initial_wait_seconds"].(float64); ok && v > 0 {
-		a.initialWait = time.Duration(v) * time.Second
-	}
 	if v, ok := cfg.Extra["poll_interval_seconds"].(float64); ok && v > 0 {
 		a.pollInterval = time.Duration(v) * time.Second
-	}
-	if v, ok := cfg.Extra["max_timeout_seconds"].(float64); ok && v > 0 {
-		a.maxTotalTimeout = time.Duration(v) * time.Second
 	}
 
 	// Override JSON field names from Extra.
@@ -200,11 +189,17 @@ func (h *HTTPGenericVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 		return &VideoResult{Request: req, Error: fmt.Errorf("no task id in response (looked for %q, id): %s", h.taskIDField, truncate(string(body), 200))}
 	}
 
-	return h.pollTask(taskID, modelUsed, req)
+	return &VideoResult{
+		Request:   req,
+		ModelUsed: modelUsed,
+		Status:    "working",
+		TaskID:    taskID,
+	}
 }
 
-// pollTask polls the task status endpoint until completion or timeout.
-func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRequest) *VideoResult {
+// pollTask polls the task status endpoint until a terminal state or cap
+// elapses. On cap it returns a working result so the caller retries.
+func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRequest, cap time.Duration) *VideoResult {
 	baseURL := h.BaseURL
 	if len(baseURL) > 0 && baseURL[len(baseURL)-1] == '/' {
 		baseURL = baseURL[:len(baseURL)-1]
@@ -212,18 +207,12 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 	pollURL := fmt.Sprintf("%s/%s", baseURL, taskID)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-
-	time.Sleep(h.initialWait)
-
-	startTime := time.Now()
+	deadline := time.Now().Add(cap)
 	lastStatus := ""
-	var firstFailureAt time.Time
-	const transientGrace = 3 * time.Minute
 
 	for {
-		elapsed := time.Since(startTime)
-		if elapsed >= h.maxTotalTimeout {
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("timeout after %v (task_id=%s)", h.maxTotalTimeout, taskID)}
+		if time.Now().After(deadline) {
+			return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "working", TaskID: taskID}
 		}
 
 		httpReq, err := http.NewRequest("GET", pollURL, nil)
@@ -249,27 +238,16 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 			continue
 		}
 
-		// Status endpoints are routinely flaky (rate limits, eventual
-		// consistency) while the task itself keeps running. Retry instead of
-		// discarding a task the backend may still complete.
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			if firstFailureAt.IsZero() {
-				firstFailureAt = time.Now()
-			}
-			if stuck := time.Since(firstFailureAt); stuck >= transientGrace {
-				return &VideoResult{Request: req, ModelUsed: modelUsed,
-					Error: fmt.Errorf("poll failing for %v, last HTTP %d: %s [task_id=%s]",
-						transientGrace, resp.StatusCode, truncate(string(body), 100), taskID)}
-			}
 			logf("video poll [%s] transient HTTP %d, retrying", taskID, resp.StatusCode)
 			time.Sleep(h.pollInterval)
 			continue
 		}
-		firstFailureAt = time.Time{}
 
 		statusResp := make(map[string]interface{})
 		if err := json.Unmarshal(body, &statusResp); err != nil {
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("parse status response: %w", err)}
+			return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "failed", TaskID: taskID,
+				Error: fmt.Errorf("parse status response: %w", err)}
 		}
 
 		status := ""
@@ -284,7 +262,7 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 
 		if status != lastStatus {
 			lastStatus = status
-			fmt.Fprintf(os.Stderr, "[media-mcp] video status [%s]: %s (progress: %.0f%%)\n", taskID, status, progress)
+			logf("video status [%s]: %s (progress: %.0f%%)", taskID, status, progress)
 		}
 
 		switch status {
@@ -307,7 +285,8 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 			}
 
 			if videoURL == "" {
-				return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("no video URL in completed response (looked for %q, url, video_url, result_url)", h.videoURLField)}
+				return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "failed", TaskID: taskID,
+					Error: fmt.Errorf("no video URL in completed response (looked for %q, url, video_url, result_url)", h.videoURLField)}
 			}
 
 			frameRate := 0.0
@@ -322,6 +301,7 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 			return &VideoResult{
 				Request:   req,
 				ModelUsed: modelUsed,
+				Status:    "completed",
 				URLs:      []string{videoURL},
 				FrameRate: frameRate,
 				Duration:  duration,
@@ -338,17 +318,22 @@ func (h *HTTPGenericVideoAdapter) pollTask(taskID, modelUsed string, req VideoRe
 					errMsg = msg
 				}
 			}
-			return &VideoResult{Request: req, ModelUsed: modelUsed, Error: fmt.Errorf("video generation failed: %s", errMsg)}
-
-		case "processing", "queued", "pending", "running":
-			time.Sleep(h.pollInterval)
-			continue
+			return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "failed", TaskID: taskID,
+				Error: fmt.Errorf("video generation failed: %s", errMsg)}
 
 		default:
 			time.Sleep(h.pollInterval)
-			continue
 		}
 	}
+}
+
+// GetVideoResult polls an existing task for up to statusPollCap.
+func (h *HTTPGenericVideoAdapter) GetVideoResult(taskID, videoID string) *VideoResult {
+	if taskID == "" {
+		return &VideoResult{Error: fmt.Errorf("task_id required")}
+	}
+	req := VideoRequest{Supplier: h.Name()}
+	return h.pollTask(taskID, h.Model, req, statusPollCap)
 }
 
 // setAuthHeader sets the Authorization header based on the config's auth method.
