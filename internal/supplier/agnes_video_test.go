@@ -163,6 +163,37 @@ func TestPollTask_fallsBackToTaskEndpoint(t *testing.T) {
 	}
 }
 
+// A task that definitively does not exist (every probed endpoint reports it)
+// must surface immediately as failed instead of being masked as working until
+// the cap elapses.
+func TestPollTask_definitiveNotFoundIsFailed(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if strings.HasPrefix(r.URL.Path, "/agnesapi") {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":{"code":404,"message":"task not found"}}`)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"code":"task_not_exist","message":"task_not_exist","data":null}`)
+	}))
+	defer srv.Close()
+
+	a := newTestAgnesVideo(srv.URL)
+	res := a.pollTask("task_1", "video_1", "m", VideoRequest{Prompt: "x"}, 5*time.Second)
+
+	if res.Status != "failed" {
+		t.Fatalf("Status = %q, want failed", res.Status)
+	}
+	if res.Error == nil || !strings.Contains(res.Error.Error(), "not found") {
+		t.Errorf("error = %v, want a task-not-found message", res.Error)
+	}
+	if calls > 2 {
+		t.Errorf("calls = %d, want immediate failure without retry", calls)
+	}
+}
+
 func TestPollTask_failedStatusIsTerminal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"status":"failed","error":{"message":"nsfw prompt"}}`)

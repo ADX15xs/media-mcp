@@ -144,7 +144,7 @@ func (s *Server) handleToolsList(msg jsonMessage) {
 			desc += ". " + c.Capabilities()
 		}
 		if hasStatus {
-			desc += fmt.Sprintf(". Submits asynchronously and returns a task_id; poll the result with %s_getVideoResult until status is completed", name)
+			desc += fmt.Sprintf(". Submits asynchronously; poll the result with %s_getVideoResult until status is completed", name)
 		}
 		tools = append(tools, map[string]interface{}{
 			"name":        fmt.Sprintf("%s_generateVideo", name),

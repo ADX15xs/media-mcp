@@ -95,7 +95,7 @@ func (a *AgnesVideoAdapter) Capabilities() string {
 	return "Rate limit: creation is limited to 1 request per minute; submit tasks sequentially with >= 60s between calls. " +
 		"Duration is capped at ~18s (num_frames <= 441 at 24fps); longer durations are clamped. " +
 		"Output dimensions are 32-aligned; the exact size is not guaranteed. " +
-		"Tasks are keyed by video_id; prefer passing video_id when polling. " +
+		"Polling is keyed by video_id: the video_id endpoint is the only one that returns the final video URL and is more reliable than the task_id endpoint. Always pass the video_id returned by generateVideo when polling; do not rely on task_id alone. " +
 		"Image-to-video is supported via the optional 'image' parameter (URL or base64 data URI)."
 }
 
@@ -313,8 +313,8 @@ type pollEndpoint struct {
 // pollTask probes the Agnes status endpoints until the task reaches a terminal
 // state or cap elapses. On cap it returns a working result (no error) so the
 // caller retries with another getVideoResult call. Both status endpoints are
-// flaky under load (404/429 for tasks that later complete); every HTTP failure
-// is treated as transient and retried within the cap.
+// flaky under load (404/429 for tasks that later complete); transient failures
+// are retried within the cap, while a definitive task-not-found fails at once.
 func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req VideoRequest, cap time.Duration) *VideoResult {
 	host := strings.TrimSuffix(strings.TrimSuffix(a.BaseURL, "/"), "/v1/videos")
 	host = strings.TrimSuffix(host, "/")
@@ -333,8 +333,12 @@ func (a *AgnesVideoAdapter) pollTask(taskID, videoID, modelUsed string, req Vide
 			return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "working", TaskID: taskID, VideoID: videoID}
 		}
 
-		st, ok, failure := a.probe(client, host, taskID, videoID)
+		st, ok, notFound, failure := a.probe(client, host, taskID, videoID)
 		if !ok {
+			if notFound {
+				return &VideoResult{Request: req, ModelUsed: modelUsed, Status: "failed", TaskID: taskID, VideoID: videoID,
+					Error: fmt.Errorf("video task not found (task_id=%s, video_id=%s)", orNone(taskID), orNone(videoID))}
+			}
 			logf("video poll transient failure (%s), retrying in %v", failure, interval)
 			time.Sleep(interval)
 			interval = growInterval(interval, tm.max)
@@ -408,28 +412,36 @@ func (a *AgnesVideoAdapter) GetVideoResult(taskID, videoID string) *VideoResult 
 }
 
 // probe queries the status endpoints in order of usefulness and returns the
-// first usable answer. ok=false means every endpoint failed this round.
-func (a *AgnesVideoAdapter) probe(client *http.Client, host, taskID, videoID string) (agnesStatus, bool, string) {
+// first usable answer. ok=false means every endpoint failed this round;
+// notFound=true means every failure was a definitive task-not-found.
+func (a *AgnesVideoAdapter) probe(client *http.Client, host, taskID, videoID string) (agnesStatus, bool, bool, string) {
 	var failures []string
+	notFound := true
 
 	for _, ep := range a.endpoints(host, taskID, videoID) {
 		body, code, err := a.get(client, ep.url)
 		if err != nil {
+			notFound = false
 			failures = append(failures, fmt.Sprintf("%s: %v", ep.label, err))
 			continue
 		}
 		debugf("video poll %s -> HTTP %d: %s", ep.label, code, truncate(string(body), 600))
 
 		if code < 200 || code >= 300 {
+			if !isTaskNotFound(code, body) {
+				notFound = false
+			}
 			failures = append(failures, fmt.Sprintf("%s: HTTP %d %s", ep.label, code, truncate(string(body), 120)))
 			continue
 		}
 		st, parseErr := parseAgnesStatus(body)
 		if parseErr != nil {
+			notFound = false
 			failures = append(failures, fmt.Sprintf("%s: parse %v", ep.label, parseErr))
 			continue
 		}
 		if st.Status == "" {
+			notFound = false
 			failures = append(failures, fmt.Sprintf("%s: no status field", ep.label))
 			continue
 		}
@@ -438,10 +450,20 @@ func (a *AgnesVideoAdapter) probe(client *http.Client, host, taskID, videoID str
 		if !ep.carriesURL && st.Status == "completed" && st.URL == "" {
 			debugf("video poll %s reported completed without URL; will resolve via agnesapi", ep.label)
 		}
-		return st, true, ""
+		return st, true, false, ""
 	}
 
-	return agnesStatus{}, false, strings.Join(failures, "; ")
+	return agnesStatus{}, false, notFound, strings.Join(failures, "; ")
+}
+
+// isTaskNotFound reports whether an Agnes status response definitively means
+// the task does not exist, as opposed to a transient 404/429 blip that the
+// backend recovers from on its own.
+func isTaskNotFound(code int, body []byte) bool {
+	if code == http.StatusNotFound {
+		return true
+	}
+	return code == http.StatusBadRequest && bytes.Contains(body, []byte("task_not_exist"))
 }
 
 func (a *AgnesVideoAdapter) endpoints(host, taskID, videoID string) []pollEndpoint {
