@@ -59,8 +59,8 @@ suppliers:
       supports_img2img: true       # 支持输入图片数组
       supports_multi_image: true   # 支持多图合成
 
-  # 2.2 Agnes Video V2.0 — 异步视频生成
-  # 注意：视频供应商使用 HTTPGenericAdapter，需配置为 type: video
+  # 2.2 Agnes Video V2.0 — 非阻塞两段式视频生成（提交 + getVideoResult 轮询）
+  # 注意：agnes_video 有专属 AgnesVideoAdapter（经 init() 自注册），不回落到通用 HTTPGenericAdapter；需配置为 type: video
   agnes_video:
     enabled: false
     type: video

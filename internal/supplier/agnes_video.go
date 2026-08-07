@@ -95,7 +95,20 @@ func (a *AgnesVideoAdapter) Capabilities() string {
 	return "Rate limit: creation is limited to 1 request per minute; submit tasks sequentially with >= 60s between calls. " +
 		"Duration is capped at ~18s (num_frames <= 441 at 24fps); longer durations are clamped. " +
 		"Output dimensions are 32-aligned; the exact size is not guaranteed. " +
-		"Tasks are keyed by video_id; prefer passing video_id when polling."
+		"Tasks are keyed by video_id; prefer passing video_id when polling. " +
+		"Image-to-video is supported via the optional 'image' parameter (URL or base64 data URI)."
+}
+
+// ExtraInputSchema declares Agnes-specific video parameters. The transport
+// forwards 'image' into req.Extra and GenVideo maps it onto the top-level
+// payload; it is not a shared field across video suppliers, so it stays here.
+func (a *AgnesVideoAdapter) ExtraInputSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"image": map[string]interface{}{
+			"type":        "string",
+			"description": "Optional: reference image (URL or base64 data URI) for image-to-video. When provided the task runs in image-to-video mode.",
+		},
+	}
 }
 
 // videoSizeTable maps aspect_ratio × resolution to backend width/height.
@@ -149,6 +162,10 @@ func (a *AgnesVideoAdapter) GenVideo(req VideoRequest) *VideoResult {
 	}
 	if req.Seed != nil {
 		payload["seed"] = *req.Seed
+	}
+
+	if img, ok := req.Extra["image"].(string); ok && img != "" {
+		payload["image"] = img
 	}
 
 	for k, v := range a.ExtraFields {

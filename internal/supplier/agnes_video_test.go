@@ -279,6 +279,61 @@ func TestGenVideo_sizeMapping(t *testing.T) {
 	}
 }
 
+func TestGenVideo_imageToVideoPassesImage(t *testing.T) {
+	var lastBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			lastBody = string(b)
+			fmt.Fprint(w, `{"task_id":"task_1","video_id":"video_1"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"completed","progress":100,"seconds":"5.0","url":"https://cdn.example.com/ok.mp4"}`)
+	}))
+	defer srv.Close()
+
+	a := newTestAgnesVideo(srv.URL)
+	res := a.GenVideo(VideoRequest{
+		Prompt: "a cat waving",
+		Extra:  map[string]interface{}{"image": "https://example.com/in.png"},
+	})
+	if res.Error != nil {
+		t.Fatalf("GenVideo() error = %v", res.Error)
+	}
+	var payload struct {
+		Image string `json:"image"`
+	}
+	if err := json.Unmarshal([]byte(lastBody), &payload); err != nil {
+		t.Fatalf("parse last body: %v (%s)", err, lastBody)
+	}
+	if payload.Image != "https://example.com/in.png" {
+		t.Errorf("payload.image = %q, want the reference image URL", payload.Image)
+	}
+}
+
+func TestGenVideo_withoutImageStaysTextOnly(t *testing.T) {
+	var lastBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			lastBody = string(b)
+			fmt.Fprint(w, `{"task_id":"task_1","video_id":"video_1"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"completed","progress":100,"seconds":"5.0","url":"https://cdn.example.com/ok.mp4"}`)
+	}))
+	defer srv.Close()
+
+	a := newTestAgnesVideo(srv.URL)
+	res := a.GenVideo(VideoRequest{Prompt: "a cat waving"})
+	if res.Error != nil {
+		t.Fatalf("GenVideo() error = %v", res.Error)
+	}
+	if strings.Contains(lastBody, `"image"`) {
+		t.Errorf("payload unexpectedly contains image field: %s", lastBody)
+	}
+}
+
 func TestGenVideo_invalidSizeValuesRejected(t *testing.T) {
 	var posts int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

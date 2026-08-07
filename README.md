@@ -24,19 +24,22 @@
 | **SenseNova** | `senseNova` | sensenova-u1-fast | token.sensenova.cn | base64 自动保存为临时文件 |
 | **Agnes AI** | `agnes_ai` | agnes-image-2.1-flash | api.agnes-ai.cn | `response_format` 需放在 `extra_body` 内 |
 | **Doubao Seedream** | `doubao_seedream` | 5.0-lite / 5.0-pro / 4.5 / 4.0 | ark.cn-beijing.volces.com | 支持 `output_format`、`watermark`、组图生成、联网搜索；工具名默认用配置键名（`doubao_seedream_generateImage`），可用 `extra.tool_name` 自定义 |
-| **Agnes Video** | `agnes_video` | agnes-video-v2.0 | api.agnes-ai.cn | 异步任务，自动轮询，返回 video_url |
+| **Agnes Video** | `agnes_video` | agnes-video-v2.0 | api.agnes-ai.cn | 非阻塞两段式：提交后返回 task_id/video_id，需调用 getVideoResult 轮询 |
 
 ## 视频生成支持
 
-视频生成为异步任务模式，支持以下流程：
+视频生成为**非阻塞两段式（手动任务）**模型：
 
-1. **提交任务** — 调用视频生成 API，获得 `task_id`
-2. **自动轮询** — 每 5 秒查询一次任务状态，最长等待 10 分钟
-3. **返回结果** — 任务完成后返回视频 URL
+1. **提交任务** — 调用 `{supplier}_generateVideo`，仅提交并立即返回 `Status: "working"` + `task_id` / `video_id`，**不阻塞等待**（避免 MCP 客户端 `-32001` 请求超时）
+2. **轮询结果** — 用返回的 `task_id` / `video_id` 调用 `{supplier}_getVideoResult` 轮询，直到返回 `completed`（视频 URL）或 `failed`
 
-工具名称：`{supplier}_generateVideo`
+工具：
 
-调用示例：
+- `{supplier}_generateVideo` — 提交视频生成任务
+- `{supplier}_getVideoResult` — 轮询已有任务状态（`task_id` / `video_id` 至少传一个）
+
+调用示例（提交）：
+
 ```jsonc
 {
   "name": "agnes_video_generateVideo",
@@ -44,12 +47,39 @@
     "prompt": "一只白色狐狸在月光下的雪原中奔跑，电影质感",
     "model": "agnes-video-v2.0",
     "duration": 5,
-    "style": "cinematic"
+    "style": "cinematic",
+    "aspect_ratio": "16:9",
+    "resolution": "720p"
   }
 }
 ```
 
+提交返回（`Status: "working"`，需轮询）：
+
+```jsonc
+{
+  "Status": "working",
+  "task_id": "task_xxx",
+  "video_id": "video_xxx",
+  "ModelUsed": "agnes-video-v2.0"
+}
+```
+
+轮询结果：
+
+```jsonc
+{
+  "name": "agnes_video_getVideoResult",
+  "arguments": {
+    "video_id": "video_xxx"
+  }
+}
+```
+
+尺寸通过第一等字段 `aspect_ratio`（9:16/16:9/1:1/4:3/3:4）+ `resolution`（480p/720p/1080p）控制，由 adapter 映射为后端 width/height；agnes 上游保持比例但将像素对齐到 32 的倍数，不保证精确尺寸。创建接口限流 **1 请求/分钟**，多个任务须串行提交且间隔 ≥ 60s。
+
 启用视频供应商需配置 `config.yml`：
+
 ```yaml
 agnes_video:
   enabled: true
@@ -57,11 +87,7 @@ agnes_video:
   api_key: ${AGNES_AI_API_KEY}
   base_url: https://api.agnes-ai.cn/v1/videos
   model: agnes-video-v2.0
-  extra:
-    width: 1152
-    height: 768
-    num_frames: 121      # 约 5 秒 (121/24 ≈ 5s)
-    frame_rate: 24
+  # width/height/num_frames/frame_rate 可选，作为未传 aspect_ratio/resolution 时的默认尺寸
 ```
 
 ## 快速开始
@@ -173,7 +199,8 @@ env     = { AGNES_AI_API_KEY = "${AGNES_AI_API_KEY}", SENSENOVA_API_KEY = "${SEN
 
 - `senseNova_generateImage` — 使用 SenseNova 生成图片
 - `agnes_ai_generateImage` — 使用 Agnes AI 生成图片（需启用）
-- `agnes_video_generateVideo` — 使用 Agnes AI 生成视频（需启用）
+- `agnes_video_generateVideo` — 使用 Agnes AI 生成视频（提交任务，需启用）
+- `agnes_video_getVideoResult` — 轮询 Agnes AI 视频任务状态（task_id/video_id 至少传一个）
 - `{supplier}_generateImage` — 任何已启用的图像供应商都会暴露为独立 tool
 - `{supplier}_generateVideo` — 任何已启用的视频供应商都会暴露为独立 tool
 
@@ -243,7 +270,7 @@ media-mcp/
 │       ├── registry.go         # 工厂注册表
 │       ├── sensenova.go        # SenseNova 专用适配器
 │       ├── agnes_ai.go         # Agnes AI 图像适配器
-│       ├── agnes_video.go      # Agnes AI 视频适配器（异步轮询）
+│       ├── agnes_video.go      # Agnes AI 视频适配器（非阻塞两段式：提交 + getVideoResult 轮询）
 │       ├── doubao_seedream.go  # Doubao Seedream 适配器
 │       └── http_generic.go     # 通用 HTTP 适配器（用于第三方）
 ├── config.yml                  # 每机独立（不进 git）
